@@ -35,13 +35,20 @@ def test_local_residual_short_seq_nan():
     assert np.all(np.isnan(r))
 
 
-def test_step_magnitude_isolates_jump():
-    pts = _line_traj()               # 기본 스텝 ≈ 10 (y 간격)
-    pts[7, 0] += 5.0
-    d = geo.step_magnitude(pts)
-    assert d[7] > 11.0               # 점프 지점: 양쪽 다 커짐 → min도 큼
-    assert abs(d[6] - 10.0) < 0.2    # 이웃: 한쪽만 큼 → min은 기본 스텝
-    assert abs(d[8] - 10.0) < 0.2
+def test_step_normal_isolates_jump():
+    pts = _line_traj()
+    pts[7, 0] += 5.0                 # 법선(x) 방향 점프
+    d = geo.step_normal(pts)
+    assert d[7] > 4.0                # 점프 지점: 양쪽 차분 다 법선 성분 큼
+    assert d[6] < 0.5 and d[8] < 0.5  # 이웃: min이 점프를 고립
+
+
+def test_step_normal_ignores_pitch_change():
+    # 진행 방향(피치) 변동은 법선 성분이 아니므로 반응하면 안 됨
+    y = np.array([0, 10, 20, 35, 45, 55, 70, 80, 90, 100], dtype=float)
+    pts = np.stack([np.full(len(y), 50.0), y], axis=1)
+    d = geo.step_normal(pts)
+    assert np.nanmax(d) < 0.1
 
 
 def test_curvature_flags_kink():

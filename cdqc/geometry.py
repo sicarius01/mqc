@@ -89,8 +89,34 @@ def normal_residual(pts: np.ndarray, window: int, method: str,
     return np.einsum("ij,ij->i", res, normal)
 
 
-def step_magnitude(pts: np.ndarray) -> np.ndarray:
-    """이웃 간 1차 차분 크기 (px).
+def _robust_tangents(pts: np.ndarray, win: int = 7) -> np.ndarray:
+    """점프에 강건한 단위 접선 — 3점 접선의 성분별 롤링 메디안 후 재정규화.
+
+    점 하나의 점프는 중앙차분 접선 3개(i−1, i, i+1)를 오염시키므로, 창 7의
+    메디안이면 오염 표가 소수라 접선이 흔들리지 않는다.
+    """
+    t = unit_tangents(pts)
+    n = len(t)
+    if n < 3:
+        return t
+    half = win // 2
+    sm = np.empty_like(t)
+    for i in range(n):
+        sl = _window_slice(i, n, half)
+        sm[i, 0] = np.median(t[sl, 0])
+        sm[i, 1] = np.median(t[sl, 1])
+    norm = np.linalg.norm(sm, axis=1, keepdims=True)
+    norm[norm == 0] = 1.0
+    return sm / norm
+
+
+def step_normal(pts: np.ndarray) -> np.ndarray:
+    """이웃 간 1차 차분의 **법선 성분** 크기 (px).
+
+    유클리드 차분 크기는 측정 피치(슬라이딩 간격)를 재는 것이라 피치 변동이
+    전부 플래그된다 — 점프는 궤적 진행 방향이 아니라 법선 방향 이탈이므로
+    차분 벡터를 궤적 법선에 사영한다. 법선은 강건 접선(_robust_tangents)에서
+    얻는다 — 점프 자신이 접선을 기울여 사영을 감쇠시키는 것을 막는다.
 
     내부 점은 앞뒤 차분 중 **작은 쪽** — 점프한 점 자신은 양쪽 다 크고,
     그 이웃은 한쪽만 크므로 min이 점프 지점을 고립시킨다. 끝점은 단측.
@@ -98,12 +124,15 @@ def step_magnitude(pts: np.ndarray) -> np.ndarray:
     n = len(pts)
     if n < 2:
         return np.full(n, np.nan)
-    d = np.linalg.norm(np.diff(pts, axis=0), axis=1)  # (n-1,)
+    d = np.diff(pts, axis=0)                          # (n-1, 2)
+    t = _robust_tangents(pts)
+    nrm = np.stack([-t[:, 1], t[:, 0]], axis=1)
+    dn = np.abs(np.einsum("ij,ij->i", d, 0.5 * (nrm[:-1] + nrm[1:])))
     out = np.empty(n)
-    out[0] = d[0]
-    out[-1] = d[-1]
+    out[0] = dn[0]
+    out[-1] = dn[-1]
     if n > 2:
-        out[1:-1] = np.minimum(d[:-1], d[1:])
+        out[1:-1] = np.minimum(dn[:-1], dn[1:])
     return out
 
 
