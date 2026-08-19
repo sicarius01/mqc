@@ -26,7 +26,6 @@ from ..config import Config
 from . import inject
 
 RECIPE_ID = "synthR"
-COORD_JITTER_PX = 0.05   # 정상 레시피 출력의 좌표 지터
 SQRT2 = np.sqrt(2.0)
 
 
@@ -74,11 +73,9 @@ def make_scene(cfg: Config, rng: np.random.Generator) -> Scene:
     centers = np.linspace(W / (n + 1), W * n / (n + 1), n)
     for cx in centers:
         base_tilt = rng.uniform(-0.03, 0.03)
-        # 폭 변동은 작게 유지 — cd_nm 코호트 산포가 크면 oblique류의
-        # 과대 CD가 z에 묻힌다 (실데이터에선 코호트 자체가 이 산포를 정의)
         scene.bands.append(Band(
             cx=float(cx + rng.uniform(-8, 8)),
-            w=float(np.clip(rng.normal(56, 0.5), 40, min(70, W / (n + 1) - 10))),
+            w=float(np.clip(rng.normal(56, 3.0), 40, min(70, W / (n + 1) - 10))),
             tilt_l=base_tilt + rng.uniform(-0.003, 0.003),
             tilt_r=base_tilt + rng.uniform(-0.003, 0.003),
             amp=float(rng.uniform(0.5, 1.5)),

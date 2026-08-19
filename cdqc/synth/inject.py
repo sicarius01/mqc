@@ -186,10 +186,10 @@ def apply_case(case: Case, scene, rows: list[dict], cfg,
         raise CdqcError("E-SYN-01", f"unknown failure: {f}")
 
     # 정상 레시피 출력 지터 (주입 후, 모든 좌표에)
-    from .generator import COORD_JITTER_PX
+    jitter = float(cfg["synthetic"]["coord_jitter_px"])
     for r in rows:
-        r["sx"] += rng.normal(0, COORD_JITTER_PX)
-        r["sy"] += rng.normal(0, COORD_JITTER_PX)
-        r["ex"] += rng.normal(0, COORD_JITTER_PX)
-        r["ey"] += rng.normal(0, COORD_JITTER_PX)
+        r["sx"] += rng.normal(0, jitter)
+        r["sy"] += rng.normal(0, jitter)
+        r["ex"] += rng.normal(0, jitter)
+        r["ey"] += rng.normal(0, jitter)
     return mods, rows

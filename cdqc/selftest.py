@@ -47,8 +47,11 @@ EXPECTATIONS: dict[str, dict[str, list[tuple[str, str, str]]]] = {
         "respond": [("delta_median_s", "l2", "all")],
         "silent": [("s_resid", "l3", "affected"), ("dstep_s", "l3", "affected")],
     },
+    # cd_nm(코호트 대비)은 코호트 자체의 CD 산포(공정 변동)가 1/cosθ 과대와
+    # 같은 크기면 원리적으로 못 잡는다 — 시퀀스 내 이웃 대비인 cd_resid가
+    # 올바른 검출 경로 (이미지 간 폭 산포에 면역)
     "oblique": {
-        "respond": [("obliquity", "l3", "affected"), ("cd_nm", "l3", "affected")],
+        "respond": [("obliquity", "l3", "affected"), ("cd_resid", "l3", "affected")],
         "silent": [("delta_s", "l3", "affected"), ("cnr_s", "l3", "affected")],
     },
     "missing": {
