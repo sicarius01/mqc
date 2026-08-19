@@ -98,12 +98,12 @@ DL 세그멘테이션 기반 레시피가 TEM 이미지에서 뽑은 CD 측정�
 
 | 피쳐 | 정의 | worse_when | 반응 |
 |---|---|---|---|
-| `cd_nm` | `hypot(ex-sx, ey-sy) * px_nm` | — (코호트) | `oblique`(과대), `edge_jump` |
+| `cd_nm` | `hypot(ex-sx, ey-sy) * px_nm` | — (코호트) | `edge_jump`. oblique 과대(1/cosθ−1)는 코호트 CD 산포(공정 변동)에 묻힐 수 있음 — oblique 검출은 `cd_resid`/`obliquity` 몫 |
 | `cd_resid` | 국소 robust 추세 대비 CD 잔차 (Hampel 또는 짧은 창 robust 회귀) | both | `edge_jump` |
 | `s_resid`, `e_resid` | 각 궤적의 국소 적합 대비 법선 방향 잔차, nm | both | `edge_jump` (한쪽만) |
-| `dstep_s`, `dstep_e` | 이웃 간 1차 차분 크기, nm | high | `edge_jump` |
+| `dstep_s`, `dstep_e` | 이웃 간 1차 차분의 **법선 성분** 크기, nm (유클리드 크기는 측정 피치를 재는 것 — 피치 변동이 전부 플래그됨. 법선은 점프에 강건한 접선(롤링 메디안)에서) | high | `edge_jump` |
 | `obliquity` | 세그먼트 방향과 국소 엣지 접선이 이루는 각의 시퀀스 중앙값 대비 편차 (deg) | high | `oblique` |
-| `curv_s`, `curv_e` | 궤적 국소 곡률 (3점) | high | `edge_jump` |
+| `curv_s`, `curv_e` | 궤적 국소 곡률 (3점). **기본 비활성** — 노이즈와 진짜 곡률 구분 불가, `s_resid`가 대체. 리포트용으로만 계산 | high | `edge_jump` |
 | `angle` | 세그먼트 절대 각도 | — (코호트) | — |
 
 ### 3.3 L2 — 카테고리 시퀀스 피쳐 (image × category)
@@ -236,7 +236,9 @@ npk_ratio = 0.3                  # 유의 피크 기준 (peak 대비)
 
 [sequence]
 local_window = 9                 # 국소 추세 창 (홀수). 실제 구조 변화 스케일보다 짧게
-method = "hampel"                # hampel | robust_linear
+method = "robust_linear"         # hampel | robust_linear. 러닝 메디안(hampel)은 기울거나
+                                 # 휜 궤적에 계통 잔차를 남김 (베이스라인 z_s_resid p90:
+                                 # hampel 9.8 vs robust_linear 1.6) — 기본은 국소 Theil-Sen
 min_seq_len = 5                  # 이보다 짧으면 시퀀스 잔차 생략, 코호트만
 
 [cohort]
@@ -264,7 +266,8 @@ delta_median_e = 0.05
 names = ["rise_s","rise_e","margin_s","margin_e","dstep_s","dstep_e","cd_mad"]
 
 [features]
-enabled_l3 = "all"               # 또는 리스트. 안 오르는 피쳐는 여기서 뺌
+enabled_l3 = "all"               # 또는 리스트. "all" = registry 기본 활성 전부
+                                 # (curv_s/e는 기본 제외 — 명시 리스트로 켤 수 있음)
 enabled_l2 = "all"
 enabled_l1 = "all"
 [features.direction]             # worse_when 오버라이드 (기본은 코드 내 메타데이터)
@@ -316,6 +319,7 @@ px_nm = 0.5
 base_contrast = 60
 noise_sigma = 6.0
 edge_rise_px = 1.5
+coord_jitter_px = 0.3            # 정상 레시피 출력 지터 (DL 컨투어 현실치 0.3~1px)
 fringe = false
 [synthetic.inject]               # 실패 모드별 강도 스윕 (selftest 감도 곡선)
 defocus         = [0, 1, 2, 4]           # rise 배수
@@ -360,7 +364,7 @@ error_codes = true               # 예외에 E-XXX-NN 코드 부착
 - Python/패키지 버전, 네트워크 호출 없음 확인
 - 스키마: 컬럼 존재, 타입, `cd_index` 중복/결측, `px_nm` 이미지 내 일관성
 - 이미지: 존재, uint8, shape
-- **좌표 컨벤션 자동 탐지**: 후보 8개 `{xy/rowcol} × {y_flip} × {origin 0/1}` (+ scale은 config에서)에 대해, **보고 좌표에서 세그먼트 축 방향 ±3px 안의 그래디언트 피크까지 거리(px)의 중앙값**을 점수로 (접선 방향 ±2px 리본 평균으로 노이즈 억제). 낮을수록 좋음: 맞으면 ~0, origin이 1px 어긋나면 ~1, 축이 뒤집히면 큼/OOB. ("평균 그래디언트 크기" 방식은 엣지 rise가 1px보다 넓으면 후보 간 차이가 원리적으로 작아 폐기.) 2등/1등 비 ≥ 3 → 채택(`cache_dir/convention.json`에 저장), < 1.5 → 경고 `W-CONV-01`. 점수표를 `out/summary/convention.txt`에 저장.
+- **좌표 컨벤션 자동 탐지**: 후보 8개 `{xy/rowcol} × {y_flip} × {origin 0/1}` (+ scale은 config에서)에 대해, **보고 좌표에서 세그먼트 축 방향 ±3px 안의 그래디언트 피크까지 거리(px, 포물선 subpixel)의 중앙값**을 점수로 (접선 방향 ±2px 리본 평균으로 노이즈 억제). 낮을수록 좋음: 맞으면 ~좌표 지터 수준, origin이 1px 어긋나면 ~1, 축이 뒤집히면 큼/OOB. ("평균 그래디언트 크기" 방식은 엣지 rise가 1px보다 넓으면 후보 간 차이가 원리적으로 작아 폐기.) 채택 조건: **1등 거리 ≤ 0.75px AND 2등/1등 비 ≥ 2** → `cache_dir/convention.json`에 저장. 비 < 1.3 또는 1등 > 1.5px → 경고 `W-CONV-01`. 점수표를 `out/summary/convention.txt`에 저장. (좌표 지터가 클수록 1등 거리가 올라가 origin 후보와의 비가 줄어든다 — 판별은 지터에 의해 근본적으로 제한됨.)
 - 좌표 양자화 검사: 소수부 히스토그램. 정수/반픽셀에 몰려 있으면 `delta` 분해능 하한 경고
 - 시퀀스: 카테고리별 `n_cd` 분포, `cd_index` 연속성
 
@@ -381,6 +385,8 @@ error_codes = true               # 예외에 E-XXX-NN 코드 부착
 ### 6.5 `cdqc calibrate`
 
 캐시된 피쳐로 코호트 통계 + auto 임계값 계산 → `calibrated.toml`. 히스토그램 템플릿, 카테고리별 `n_cd` 최빈값, 극성 최빈값도 여기 저장. `config.toml`은 건드리지 않는다.
+
+**오염 한계**: 통계·auto 임계값은 "대부분 정상" 가정의 분위수라, 불량률이 높은 데이터로 캘리브레이션하면 임계값이 그대로 올라간다 (트림은 ~5% 오염까지만 방어). 그런 경우 `--baseline <파일>`(정상 image_id 목록, 한 줄에 하나, `#` 주석 허용)로 정상 이미지만 지정. 사용 여부는 calibrated.toml meta에 기록. 또한 `t_soft`는 피쳐 max의 분위수라 **피쳐 셋을 바꾸면 재캘리브레이션 필수**.
 
 ### 6.6 `cdqc run`
 
@@ -444,7 +450,7 @@ img = background(gradient) + Σ layers(erf edge profile, contrast, position)
 | `noise_up` | 노이즈 σ 배수 ↑ | `cnr`, L1 `noise_sigma` | `delta_median` |
 | `edge_jump` | i번째 CD의 S(또는 E)를 d nm 이동 | `delta_s`, `s_resid`, `dstep_s`, `cd_resid` | `e_*` |
 | `systematic_bias` | 시퀀스 전체 S를 d nm 이동 | `delta_median_s` | 개별 `s_resid`, `dstep_s` |
-| `oblique` | 세그먼트를 θ 회전 (양 끝 엣지 위 유지) | `obliquity`, `cd_nm` (1/cosθ) | `delta`, `cnr` |
+| `oblique` | 세그먼트를 θ 회전 (양 끝 엣지 위 유지) | `obliquity`, `cd_resid` (국소 과대) | `delta`, `cnr` |
 | `missing` | 일부 CD 삭제 | `n_cd` | 나머지 CD 피쳐 |
 | `double_edge` | 엣지 근처에 약한 두 번째 엣지 추가 | `margin`, `npk` | `cnr` |
 | `plateau_defect` | S–E 사이에 밝은/어두운 블롭 | `plateau_cv` | `delta` |

@@ -76,9 +76,11 @@ RCP01,img_0002,images/img_0002.png,A,0,80.9,40.0,130.8,40.1,0.5
 ## 사내 첫날 체크리스트 (spec §10.1)
 
 ```
-python -m cdqc doctor        # 좌표 컨벤션 점수표 — 2등/1등 비 3배 미만이면 멈추고 상의
+python -m cdqc doctor        # 좌표 컨벤션 점수표 — 채택 안 되면 멈추고 상의
 python -m cdqc extract
 python -m cdqc calibrate     # calibrated.toml 생성 (auto 임계값)
+                             # 불량률 높은 데이터면: --baseline 정상목록.txt
+                             #   (정상 image_id 한 줄에 하나 — 분위 기반 임계값 오염 방지)
 python -m cdqc run
 # out/internal/overlay 20장 눈으로 확인 (세그먼트가 실제 엣지 사이에 놓이는지)
 # out/summary/ 검토: feature_stats(결측률·skew), correlation(|r|>0.9),
