@@ -66,6 +66,12 @@ def extract_features(cfg: Config, records: pl.DataFrame | None = None,
             E = np.stack([ex, ey], axis=1)
             px_nm = float(seq[0, "px_nm"])
             feats3 = l3_sequence_features(img, S, E, px_nm, cfg)
+            # 보고 측정값 ↔ 좌표 기하 길이 정합 (좌표·값이 따로 놀면 반응)
+            if "value_nm" in seq.columns:
+                feats3["value_mismatch_nm"] = (
+                    seq["value_nm"].to_numpy() - feats3["cd_nm"])
+            else:
+                feats3["value_mismatch_nm"] = np.full(len(seq), np.nan)
             base = {
                 "recipe_id": np.repeat(recipe_id, len(seq)),
                 "image_id": np.repeat(image_id, len(seq)),
@@ -80,7 +86,7 @@ def extract_features(cfg: Config, records: pl.DataFrame | None = None,
             l3_parts.append(pl.DataFrame(base))
 
     if not l3_parts:
-        raise CdqcError("E-DATA-08")
+        raise CdqcError("E-DATA-09")
     l3 = pl.concat(l3_parts).sort(["recipe_id", "image_id", "category_id", "cd_index"])
     l2 = l2_static_features(l3)
     l1 = pl.DataFrame(l1_rows).sort(["recipe_id", "image_id"])

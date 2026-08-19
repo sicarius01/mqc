@@ -76,6 +76,7 @@ REGISTRY: list[Feature] = [
     _F("curv_s", "l3", "z", "high", "S 궤적 3점 국소 곡률(2차 차분, nm)", "SEQUENCE_JUMP", enabled_default=False),
     _F("curv_e", "l3", "z", "high", "E 궤적 3점 국소 곡률(nm)", "SEQUENCE_JUMP", enabled_default=False),
     _F("angle", "l3", "z", "both", "세그먼트 절대 각도(deg) — 코호트 대비", "GEOMETRY_ODD"),
+    _F("value_mismatch_nm", "l3", "z", "both", "보고 측정값과 좌표 기하 길이의 차(nm) — 좌표·값 불일치 감지", "GEOMETRY_ODD"),
     # ---- L2 카테고리 시퀀스 (image × category) ------------------------------
     _F("n_cd", "l2", "z", "both", "CD 개수 — 코호트 최빈값 대비 (missing 감지)", g2=True),
     _F("frac_flagged", "l2", "z", "high", "L3 플래그 비율", computed_at="run"),

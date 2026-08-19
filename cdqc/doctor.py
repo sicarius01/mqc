@@ -137,6 +137,47 @@ def detect_convention(cfg: Config, records: pl.DataFrame) -> tuple[dict | None, 
     return adopted, "\n".join(lines)
 
 
+def data_report(records: pl.DataFrame, cfg: Config) -> str:
+    """단위 분포, px_nm 출처/역산 ratio CV, cd_index 출처."""
+    lines = ["# 데이터 계약 점검"]
+    lines.append(f"cd_index 출처: {cfg['data']['cd_index_source']}")
+
+    if "unit" in records.columns:
+        counts = records.group_by("unit").len().sort("len", descending=True)
+        dist = ", ".join(f"{u!r}×{n}" for u, n in counts.rows())
+        lines.append(f"단위 컬럼 고유값 분포: {dist}")
+    else:
+        lines.append(f"단위 컬럼 없음 → value_unit={cfg['data']['value_unit']!r} 폴백")
+
+    # px_nm이 역산인지 제공인지는 로더가 처리 — 여기서는 값-기하 정합만 본다
+    scale = float(cfg["data"]["coords"]["scale"])
+    ratio = records.with_columns(
+        (pl.col("value_nm")
+         / (((pl.col("ex") - pl.col("sx")).pow(2)
+             + (pl.col("ey") - pl.col("sy")).pow(2)).sqrt() * scale))
+        .alias("__r__"))
+    bad_images = []
+    worst = 0.0
+    for (image_id,), part in ratio.partition_by(["image_id"], as_dict=True).items():
+        r = part["__r__"].to_numpy()
+        r = r[np.isfinite(r)]
+        if len(r) < 3:
+            continue
+        med = np.median(r)
+        cv = 1.4826 * np.median(np.abs(r - med)) / max(abs(med), 1e-12)
+        worst = max(worst, cv)
+        if cv > 0.01:
+            bad_images.append((image_id, cv))
+    lines.append(f"value/기하 ratio robust CV: 최댓값 {worst * 100:.2f}%  "
+                 f"(>1% 이미지 {len(bad_images)}개 / {records['image_id'].n_unique()}개)")
+    if bad_images:
+        warn("W-DATA-07", f"{len(bad_images)} images, worst={worst * 100:.2f}%")
+        lines.append(f"[W-DATA-07] {ERROR_CODES['W-DATA-07']}")
+        for image_id, cv in sorted(bad_images, key=lambda t: -t[1])[:5]:
+            lines.append(f"  {image_id}: CV={cv * 100:.2f}%")
+    return "\n".join(lines)
+
+
 def check_quantization(records: pl.DataFrame) -> str:
     """좌표 소수부 분포 → 양자화 경고 (delta 분해능 하한)."""
     coords = np.concatenate([records[c].to_numpy()
@@ -195,6 +236,7 @@ def run_doctor(cfg: Config) -> tuple[str, bool]:
         sections.append(f"# 스키마\n레코드 {records.height}건, "
                         f"이미지 {records['image_id'].n_unique()}개, "
                         f"레시피 {records['recipe_id'].n_unique()}개 — OK")
+        sections.append(data_report(records, cfg))
     except CdqcError as e:
         sections.append(f"# 스키마\nFAIL {e}")
         report = "\n\n".join(sections)
