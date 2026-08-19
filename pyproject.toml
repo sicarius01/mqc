@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cdqc"
+version = "0.1.0"
+description = "TEM CD measurement quality check — interpretable feature-based gating"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy==2.5.2",
+    "scipy==1.18.0",
+    "polars==1.43.2",
+    "opencv-python-headless==5.0.0.93",
+    "matplotlib==3.11.1",
+    "pandas==3.0.5",
+    "pyarrow==25.0.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==9.1.1"]
+explore = ["scikit-learn"]
+
+[project.scripts]
+cdqc = "cdqc.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["cdqc*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
