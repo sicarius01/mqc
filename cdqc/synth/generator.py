@@ -129,7 +129,12 @@ def render(scene: Scene, mods: inject.ImageMods, rng: np.random.Generator) -> np
 
 
 def truth_records(scene: Scene, cfg: Config) -> list[dict]:
-    """카테고리별 참 (sx, sy, ex, ey). cd_index는 y 오름차순."""
+    """카테고리별 참 (sx, sy, ex, ey) + 보고 측정값(value, 단위 혼합).
+
+    value는 **참 길이 × px_nm** — 이후 inject가 좌표를 바꿔도 value는 그대로
+    둔다 (좌표·값 불일치를 value_mismatch_nm이 잡는 경로가 selftest에서
+    실행되게). 단위는 행마다 "Å"/"nm"을 번갈아 써서 행별 변환 경로를 통과.
+    """
     syn = cfg["synthetic"]
     n_cd = int(syn["cds_per_category"])
     ys = np.linspace(40, scene.H - 40, n_cd)
@@ -139,9 +144,13 @@ def truth_records(scene: Scene, cfg: Config) -> list[dict]:
         xr = band.x_right(ys, scene.H)
         cat = chr(ord("A") + k)
         for i in range(n_cd):
+            length_nm = float(np.hypot(xr[i] - xl[i], 0.0)) * scene.px_nm
+            angstrom = (len(rows) % 2 == 0)
             rows.append({"category_id": cat, "cd_index": i,
                          "sx": float(xl[i]), "sy": float(ys[i]),
                          "ex": float(xr[i]), "ey": float(ys[i]),
+                         "value": length_nm * 10 if angstrom else length_nm,
+                         "unit": "Å" if angstrom else "nm",
                          "band": k})
     return rows
 
@@ -181,7 +190,6 @@ def generate_dataset(cfg: Config, out_root: Path) -> pl.DataFrame:
                     "recipe_id": RECIPE_ID,
                     "image_id": image_id,
                     "image_path": f"images/{image_id}.png",
-                    "px_nm": scene.px_nm,
                     "injected_failure": case.failure,
                     "injected_strength": str(case.strength),
                     "sev_rank": case.sev_rank,
@@ -190,7 +198,7 @@ def generate_dataset(cfg: Config, out_root: Path) -> pl.DataFrame:
 
     df = pl.DataFrame(all_rows)
     std = ["recipe_id", "image_id", "image_path", "category_id", "cd_index",
-           "sx", "sy", "ex", "ey", "px_nm",
+           "sx", "sy", "ex", "ey", "value", "unit",
            "injected_failure", "injected_strength", "sev_rank", "affected"]
     df = df.select(std).sort(["injected_failure", "sev_rank", "image_id",
                               "category_id", "cd_index"])

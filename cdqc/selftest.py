@@ -80,7 +80,8 @@ EXPECTATIONS: dict[str, dict[str, list[tuple[str, str, str]]]] = {
 SANDBOX_OVERRIDES = {
     "paths": {"data_dir": "data/synth", "image_dir": "data/synth",
               "cache_dir": "out/selftest/cache"},
-    "data": {"coords": {"convention": "xy"}},
+    "data": {"coords": {"convention": "xy"},
+             "columns": {"unit": "unit"}},   # 합성 records는 단위 컬럼 포함
     "cohort": {"min_cohort_n": 20},   # 합성 L2 코호트(케이스당 수십 시퀀스)에 맞춤
 }
 
