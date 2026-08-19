@@ -22,8 +22,9 @@ from .config import Config
 from .errors import ERROR_CODES, CdqcError, warn
 from .features.l1 import _grad_mag
 
-ADOPT_RATIO = 3.0
-WARN_RATIO = 1.5
+ADOPT_RATIO = 2.0    # 2등/1등 비 하한
+ADOPT_ABS = 0.75     # 1등 중앙값 거리 상한 (px) — 좌표가 실제로 엣지 위에 있어야 채택
+WARN_RATIO = 1.3
 MAX_SAMPLE_IMAGES = 30
 
 _PACKAGES = ("numpy", "scipy", "polars", "opencv-python-headless",
@@ -93,13 +94,26 @@ def detect_convention(cfg: Config, records: pl.DataFrame) -> tuple[dict | None, 
             G = g.reshape(len(pts), len(offsets), len(lat_off)).mean(axis=2)
             valid = inb.reshape(len(pts), len(offsets), len(lat_off)) \
                        .all(axis=(1, 2))
-            best = np.abs(offsets[np.argmax(G, axis=1)])
+            imax = np.argmax(G, axis=1)
+            # 포물선 보간으로 그리드 양자화(0.25px) 제거
+            step = float(offsets[1] - offsets[0])
+            corr = np.zeros(len(pts))
+            interior = (imax > 0) & (imax < len(offsets) - 1)
+            ii = np.where(interior)[0]
+            if len(ii):
+                y0 = G[ii, imax[ii] - 1]
+                y1 = G[ii, imax[ii]]
+                y2 = G[ii, imax[ii] + 1]
+                denom = y0 - 2 * y1 + y2
+                ok = np.abs(denom) > 1e-12
+                corr[ii[ok]] = np.clip(0.5 * (y0 - y2)[ok] / denom[ok], -0.5, 0.5)
+            best = np.abs(offsets[imax] + corr * step)
             best[~valid] = oob_penalty
             deltas[i].extend(best.tolist())
 
     med = np.array([np.median(d) if d else oob_penalty for d in deltas])
     order = np.argsort(med)
-    s1 = max(float(med[order[0]]), 0.15)   # 지터/양자화 바닥
+    s1 = max(float(med[order[0]]), 0.1)    # 지터/양자화 바닥
     ratio = float(med[order[1]]) / s1
 
     lines = ["# 좌표 컨벤션 점수표 (보고 좌표 ↔ 축방향 그래디언트 피크 중앙값 거리, px — 낮을수록 좋음)",
@@ -108,15 +122,15 @@ def detect_convention(cfg: Config, records: pl.DataFrame) -> tuple[dict | None, 
         mark = " <-- 1등" if i == order[0] else ""
         lines.append(f"{_cand_name(cands[i]):<34} {med[i]:>8.3f}{mark}")
     lines.append("")
-    lines.append(f"2등/1등 비 = {ratio:.2f}  (채택 기준 >= {ADOPT_RATIO}, "
-                 f"경고 기준 < {WARN_RATIO})")
+    lines.append(f"1등 거리 = {med[order[0]]:.3f} px (채택 상한 {ADOPT_ABS}), "
+                 f"2등/1등 비 = {ratio:.2f} (채택 하한 {ADOPT_RATIO}, 경고 < {WARN_RATIO})")
 
     adopted = None
-    if ratio >= ADOPT_RATIO:
+    if med[order[0]] <= ADOPT_ABS and ratio >= ADOPT_RATIO:
         adopted = cands[order[0]]
         lines.append(f"채택: {_cand_name(adopted)}")
-    elif ratio < WARN_RATIO:
-        warn("W-CONV-01", f"ratio={ratio:.2f}")
+    elif ratio < WARN_RATIO or med[order[0]] > 1.5:
+        warn("W-CONV-01", f"best={med[order[0]]:.2f}px ratio={ratio:.2f}")
         lines.append(f"[W-CONV-01] {ERROR_CODES['W-CONV-01']}")
     else:
         lines.append("채택 보류 — 점수표를 눈으로 확인하고 [data.coords]를 수동 설정할 것")
