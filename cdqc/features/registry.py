@@ -39,6 +39,8 @@ class Feature:
     computed_at: str = "extract"   # "extract" | "run" (플래그 의존 피쳐는 run)
     g2: bool = False      # L2 중 G2 게이트(시퀀스 요약 z) 입력 여부
     g0: bool = False      # L1 중 G0 게이트 입력 여부
+    enabled_default: bool = True   # enabled_* = "all"일 때 포함 여부
+                                   # (계산·리포트는 되지만 플래그를 구동하지 않음)
 
 
 _F = Feature
@@ -70,8 +72,9 @@ REGISTRY: list[Feature] = [
     _F("dstep_s", "l3", "z", "high", "S 이웃 간 1차 차분 크기(nm) — 점프 감지", "SEQUENCE_JUMP"),
     _F("dstep_e", "l3", "z", "high", "E 이웃 간 1차 차분 크기(nm)", "SEQUENCE_JUMP"),
     _F("obliquity", "l3", "z", "high", "세그먼트-엣지접선 각의 시퀀스 중앙값 대비 편차(deg)", "GEOMETRY_ODD"),
-    _F("curv_s", "l3", "z", "high", "S 궤적 3점 국소 곡률(2차 차분, nm)", "SEQUENCE_JUMP"),
-    _F("curv_e", "l3", "z", "high", "E 궤적 3점 국소 곡률(nm)", "SEQUENCE_JUMP"),
+    # curv는 노이즈와 진짜 곡률을 구분 못 해 기본 비활성 (리포트용) — s_resid가 대체
+    _F("curv_s", "l3", "z", "high", "S 궤적 3점 국소 곡률(2차 차분, nm)", "SEQUENCE_JUMP", enabled_default=False),
+    _F("curv_e", "l3", "z", "high", "E 궤적 3점 국소 곡률(nm)", "SEQUENCE_JUMP", enabled_default=False),
     _F("angle", "l3", "z", "both", "세그먼트 절대 각도(deg) — 코호트 대비", "GEOMETRY_ODD"),
     # ---- L2 카테고리 시퀀스 (image × category) ------------------------------
     _F("n_cd", "l2", "z", "both", "CD 개수 — 코호트 최빈값 대비 (missing 감지)", g2=True),
@@ -103,11 +106,15 @@ def features_of(level: str, kind: str | None = None) -> list[Feature]:
 
 
 def enabled_names(cfg, level: str) -> list[str]:
-    """config [features.enabled_*] 필터 적용된 피쳐 이름 목록."""
+    """config [features.enabled_*] 필터 적용된 피쳐 이름 목록.
+
+    "all"은 registry의 enabled_default=True 피쳐 전부. 명시 리스트를 주면
+    기본 비활성 피쳐(curv 등)도 켤 수 있다.
+    """
     setting = cfg["features"][f"enabled_{level}"]
     names = [f.name for f in features_of(level)]
     if setting == "all":
-        return names
+        return [f.name for f in features_of(level) if f.enabled_default]
     unknown = set(setting) - set(names)
     if unknown:
         from ..errors import CdqcError

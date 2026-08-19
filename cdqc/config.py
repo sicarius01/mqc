@@ -56,7 +56,7 @@ DEFAULTS: dict[str, Any] = {
         "peak_suppress": 6,
         "npk_ratio": 0.3,
     },
-    "sequence": {"local_window": 9, "method": "hampel", "min_seq_len": 5},
+    "sequence": {"local_window": 9, "method": "robust_linear", "min_seq_len": 5},
     "cohort": {
         "key_l3": ["recipe_id", "category_id"],
         "key_l1": ["recipe_id"],
@@ -109,6 +109,7 @@ DEFAULTS: dict[str, Any] = {
         "base_contrast": 60,
         "noise_sigma": 6.0,
         "edge_rise_px": 1.5,
+        "coord_jitter_px": 0.3,
         "fringe": False,
         "inject": {
             "defocus": [0, 1, 2, 4],

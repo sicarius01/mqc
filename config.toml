@@ -47,7 +47,8 @@ npk_ratio = 0.3                  # 유의 피크 기준 (peak 대비)
 
 [sequence]
 local_window = 9                 # 국소 추세 창 (홀수). 실제 구조 변화 스케일보다 짧게
-method = "hampel"                # hampel | robust_linear
+method = "robust_linear"         # hampel | robust_linear. 러닝 메디안(hampel)은
+                                 # 기울거나 휜 궤적에 계통 잔차를 남김 — 기본은 국소 Theil-Sen
 min_seq_len = 5                  # 이보다 짧으면 시퀀스 잔차 생략, 코호트만
 
 [cohort]
@@ -75,7 +76,9 @@ max_run = 0.5
 names = ["rise_s", "rise_e", "margin_s", "margin_e", "dstep_s", "dstep_e", "cd_mad"]
 
 [features]
-enabled_l3 = "all"               # 또는 리스트. 안 오르는 피쳐는 여기서 뺌
+enabled_l3 = "all"               # 또는 리스트. "all" = registry 기본 활성 피쳐 전부
+                                 # (curv_s/e는 노이즈와 진짜 곡률 구분이 안 돼 기본 제외 —
+                                 #  s_resid가 같은 정보를 더 잘 잡음. 명시 리스트로 켤 수 있음)
 enabled_l2 = "all"
 enabled_l1 = "all"
 [features.direction]             # worse_when 오버라이드 (기본은 코드 내 메타데이터)
@@ -127,6 +130,7 @@ px_nm = 0.5
 base_contrast = 60
 noise_sigma = 6.0
 edge_rise_px = 1.5
+coord_jitter_px = 0.3            # 정상 레시피 출력의 좌표 지터 (DL 컨투어는 0.3~1px 흔들림)
 fringe = false
 [synthetic.inject]               # 실패 모드별 강도 스윕 (selftest 감도 곡선)
 defocus         = [0, 1, 2, 4]           # rise 배수 (0 = 주입 없음 표기가 아니라 1x 기준: 0→1x)
