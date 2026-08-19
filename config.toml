@@ -17,17 +17,22 @@ labels         = "labels.csv"    # 선택. 검증용
 [data]
 format = "csv"                   # csv | parquet
 image_ext = ".png"
+value_unit = "nm"                # 단위 컬럼이 없을 때의 폴백 (nm | angstrom)
+cd_index_source = "row_order"    # row_order(파일 행 순서로 생성) | column(컬럼 사용)
+default_recipe_id = "R1"         # recipe_id 컬럼이 없을 때 채우는 상수
 [data.columns]                   # 사용자 컬럼명 → 표준명 매핑
-recipe_id = "recipe_id"
+recipe_id = "recipe_id"          # 선택 — 컬럼 없으면 default_recipe_id로 채움
 image_id = "image_id"
 image_path = "image_path"
 category_id = "category_id"
-cd_index = "cd_index"
+cd_index = "cd_index"            # cd_index_source="column"일 때만 사용
 sx = "sx"
 sy = "sy"
 ex = "ex"
 ey = "ey"
-px_nm = "px_nm"
+value = "value"                  # 보고 측정값 (필수)
+unit = ""                        # 단위 컬럼. "" = 없음 → value_unit 폴백. 행별 nm/Å 인식
+px_nm = "px_nm"                  # 선택 — 컬럼 있으면 우선, 없으면 value/기하 비로 역산
 [data.coords]
 convention = "auto"              # auto | xy | rowcol ; auto면 doctor 결과 사용
 origin = "zero"                  # zero | one
@@ -68,6 +73,7 @@ noise_sigma = 0.05               # gray level. uint8 양자화로 MAD=0 방지
 dyn_range = 1.0                  # gray level
 delta_median_s = 0.05            # nm. subpixel 추정 분해능 아래 MAD 증폭 방지
 delta_median_e = 0.05
+value_mismatch_nm = 0.02         # nm. 값-기하 정합은 정상에서 거의 0 — MAD 증폭 방지
 frac_flagged = 0.05
 overshoot_s = 0.02
 overshoot_e = 0.02

@@ -34,14 +34,19 @@ DEFAULTS: dict[str, Any] = {
     "data": {
         "format": "csv",
         "image_ext": ".png",
+        "value_unit": "nm",              # 단위 컬럼이 없을 때의 폴백 (nm | angstrom)
+        "cd_index_source": "row_order",  # row_order | column
+        "default_recipe_id": "R1",       # recipe_id 컬럼이 없을 때 채우는 상수
         "columns": {
-            "recipe_id": "recipe_id",
+            "recipe_id": "recipe_id",    # 선택 — 없으면 default_recipe_id
             "image_id": "image_id",
             "image_path": "image_path",
             "category_id": "category_id",
-            "cd_index": "cd_index",
+            "cd_index": "cd_index",      # cd_index_source="column"일 때만 사용
             "sx": "sx", "sy": "sy", "ex": "ex", "ey": "ey",
-            "px_nm": "px_nm",
+            "value": "value",            # 보고 측정값 (필수)
+            "unit": "",                  # 단위 컬럼. "" = 없음 → value_unit 폴백
+            "px_nm": "px_nm",            # 선택 — 있으면 우선, 없으면 value로 역산
         },
         "coords": {"convention": "auto", "origin": "zero", "y_flip": False, "scale": 1.0},
     },
@@ -68,7 +73,8 @@ DEFAULTS: dict[str, Any] = {
                       "frac_flagged": 0.05, "overshoot_s": 0.02,
                       "overshoot_e": 0.02, "max_run": 0.5,
                       "noise_sigma": 0.05, "dyn_range": 1.0,
-                      "delta_median_s": 0.05, "delta_median_e": 0.05},
+                      "delta_median_s": 0.05, "delta_median_e": 0.05,
+                      "value_mismatch_nm": 0.02},
         "log_features": {
             "names": ["rise_s", "rise_e", "margin_s", "margin_e",
                       "dstep_s", "dstep_e", "cd_mad"],

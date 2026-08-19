@@ -27,7 +27,9 @@ ERROR_CODES: dict[str, str] = {
     "E-DATA-05": "이미지가 8-bit grayscale이 아님",
     "E-DATA-06": "cd_index 중복 (image, category 내)",
     "E-DATA-07": "px_nm이 이미지 내에서 일관되지 않음",
-    "E-DATA-08": "레코드가 0건",
+    "E-DATA-08": "알 수 없는 단위 값 — 추측하지 않고 중단",
+    "E-DATA-09": "레코드가 0건",
+    "E-DATA-10": "px_nm 역산 불가 (이미지 내 유효 value/좌표 없음)",
     # 좌표 컨벤션
     "E-CONV-01": "좌표가 이미지 범위를 벗어남 (컨벤션 오류 가능성)",
     "E-CONV-02": "convention='auto'인데 doctor 탐지 결과가 없음",
@@ -49,6 +51,7 @@ ERROR_CODES: dict[str, str] = {
     # 경고
     "W-CONV-01": "좌표 컨벤션 점수 1등/2등 비가 낮음 — 수동 확인 필요",
     "W-CONV-02": "좌표 양자화 감지 — delta 분해능 하한 있음",
+    "W-DATA-07": "px_nm 역산 ratio CV > 1% — 좌표와 보고값이 따로 계산됐을 가능성",
     "W-COH-01": "코호트 샘플 부족 — 상위 레벨로 폴백",
     "W-CAL-01": "calibrated.toml 없음 — 현재 데이터로 즉석 캘리브레이션 (자기참조 주의)",
     "W-SEQ-01": "시퀀스가 min_seq_len 미만 — 시퀀스 잔차 생략",
