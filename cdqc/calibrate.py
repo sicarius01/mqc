@@ -37,9 +37,16 @@ def _quantile(x: np.ndarray, q: float) -> float:
 
 
 def calibrate_frames(cfg: Config, l3: pl.DataFrame, l2s: pl.DataFrame,
-                     l1: pl.DataFrame, write: bool = True
+                     l1: pl.DataFrame, write: bool = True,
+                     baseline_note: str = "no"
                      ) -> tuple[CohortStats, dict]:
-    """주어진 피쳐 프레임으로 코호트 통계 + auto 임계값 계산."""
+    """주어진 피쳐 프레임으로 코호트 통계 + auto 임계값 계산.
+
+    주의: 통계·auto 임계값은 "데이터셋 대부분이 정상" 가정에 기댄다 (트림은
+    5% 수준 오염만 방어). 불량률이 높은 데이터로 캘리브레이션하면 분위 기반
+    임계값이 그대로 올라간다 — 그런 경우 --baseline으로 정상 이미지 목록을
+    지정할 것.
+    """
     from .pipeline import add_hist_emd  # 순환 임포트 방지 (함수 내 지연)
 
     auto = cfg["thresholds"]["auto"]
@@ -74,6 +81,7 @@ def calibrate_frames(cfg: Config, l3: pl.DataFrame, l2s: pl.DataFrame,
                 "config_hash": cfg.config_hash,
                 "n_cd": l3.height,
                 "n_images": l1.height,
+                "baseline_filtered": baseline_note,
             },
             "thresholds": thresholds,
         }
@@ -83,9 +91,40 @@ def calibrate_frames(cfg: Config, l3: pl.DataFrame, l2s: pl.DataFrame,
     return cs, thresholds
 
 
-def run_calibrate(cfg: Config, force: bool = False) -> dict:
-    """CLI 진입점: 캐시된 피쳐로 calibrated.toml 작성."""
+def load_baseline_ids(path) -> set[str]:
+    """--baseline 목록 파일: 한 줄에 image_id 하나, '#' 주석 허용."""
+    from pathlib import Path
+    p = Path(path)
+    if not p.exists():
+        raise CdqcError("E-CAL-03", str(p))
+    ids = set()
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            ids.add(line)
+    if not ids:
+        raise CdqcError("E-CAL-03", f"{p}: 빈 목록")
+    return ids
+
+
+def run_calibrate(cfg: Config, force: bool = False,
+                  baseline: str | None = None) -> dict:
+    """CLI 진입점: 캐시된 피쳐로 calibrated.toml 작성.
+
+    baseline이 주어지면 그 image_id들만으로 통계/임계값을 계산한다
+    (오염된 데이터셋에서 auto 분위수가 올라가는 것을 방어).
+    """
     from .pipeline import extract_features
     l3, l2s, l1 = extract_features(cfg, force=force)
-    _, thresholds = calibrate_frames(cfg, l3, l2s, l1, write=True)
+    note = "no"
+    if baseline is not None:
+        ids = load_baseline_ids(baseline)
+        l3 = l3.filter(pl.col("image_id").is_in(list(ids)))
+        l2s = l2s.filter(pl.col("image_id").is_in(list(ids)))
+        l1 = l1.filter(pl.col("image_id").is_in(list(ids)))
+        if l1.height == 0:
+            raise CdqcError("E-CAL-03", "목록과 매칭되는 이미지가 0개")
+        note = f"yes ({l1.height} images)"
+    _, thresholds = calibrate_frames(cfg, l3, l2s, l1, write=True,
+                                     baseline_note=note)
     return thresholds

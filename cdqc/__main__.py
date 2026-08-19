@@ -101,9 +101,12 @@ def cmd_extract(cfg: Config, args) -> int:
 
 def cmd_calibrate(cfg: Config, args) -> int:
     from .calibrate import run_calibrate
-    thr = run_calibrate(cfg, force=args.force)
+    thr = run_calibrate(cfg, force=args.force, baseline=args.baseline)
     print(f"calibrated.toml 작성: {cfg.path('calibrated')}")
     print(f"auto 임계값: {thr}")
+    if args.baseline is None:
+        print("주의: auto 임계값은 '대부분 정상' 가정의 분위수 — 불량률이 높은 "
+              "데이터셋이면 --baseline <정상 image_id 목록 파일>을 쓸 것")
     return 0
 
 
@@ -167,6 +170,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="캐시/합성 데이터 무시하고 재생성")
     ap.add_argument("--sweep", default=None, metavar="KEY=V1,V2,...",
                     help="run 전용: 설정값 스윕")
+    ap.add_argument("--baseline", default=None, metavar="PATH",
+                    help="calibrate 전용: 정상 image_id 목록 파일 (한 줄에 하나)")
     args = ap.parse_args(argv)
 
     config_path = args.config

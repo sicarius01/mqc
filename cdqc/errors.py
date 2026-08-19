@@ -38,6 +38,7 @@ ERROR_CODES: dict[str, str] = {
     # 캘리브레이션
     "E-CAL-01": "calibrated.toml 파싱 실패",
     "E-CAL-02": "캘리브레이션에 필요한 피쳐 캐시가 없음",
+    "E-CAL-03": "--baseline 목록 파일이 없거나 매칭되는 이미지가 0개",
     # 합성
     "E-SYN-01": "합성 설정 오류",
     # 평가
