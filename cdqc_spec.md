@@ -32,18 +32,24 @@ DL 세그멘테이션 기반 레시피가 TEM 이미지에서 뽑은 CD 측정�
 
 **이미지**: 8-bit grayscale, `np.ndarray[uint8]`, shape `(H, W)`. `cv2.imread(path, cv2.IMREAD_GRAYSCALE)`로 읽은 것.
 
-**측정 레코드**: CD 하나 = 한 행. 최소 스키마:
+**측정 레코드**: CD 하나 = 한 행. 스키마 (변경 지시 #01 반영):
 
-| 컬럼 | 타입 | 설명 |
-|---|---|---|
-| `recipe_id` | str | 레시피 식별자. 사용자가 분리해서 넣음 |
-| `image_id` | str | 이미지 식별자 (파일명 stem 등) |
-| `image_path` | str | 이미지 파일 경로 (project root 기준 상대 또는 절대) |
-| `category_id` | str | CD 카테고리 (A, B, C ...) |
-| `cd_index` | int | ROI 내 측정 순서. **시퀀스 피쳐 전부가 여기 의존** |
-| `sx, sy` | float | 엣지 S 좌표 (px, subpixel 가능) |
-| `ex, ey` | float | 엣지 E 좌표 (px) |
-| `px_nm` | float | 픽셀 크기 (nm/px). 이미지 단위로 같아도 행마다 반복 저장 |
+| 컬럼 | 타입 | 필수 | 설명 |
+|---|---|---|---|
+| `image_id` | str | O | 이미지 식별자 (파일명 stem 등) |
+| `image_path` | str | O | 이미지 파일 경로 (project root 기준 상대 또는 절대) |
+| `category_id` | str | O | CD 카테고리 (A, B, C ...) |
+| `sx, sy` | float | O | 엣지 S 좌표 (px, subpixel 가능) |
+| `ex, ey` | float | O | 엣지 E 좌표 (px) |
+| `value` | float | O | 레시피가 보고한 측정값 (단위는 unit 컬럼 또는 `[data].value_unit`) |
+| `unit` | str | 선택 | 행별 단위. Å/nm 변형들 인식, 그 외는 `E-DATA-08`로 즉시 중단 (추측 금지) |
+| `recipe_id` | str | 선택 | 없으면 `[data].default_recipe_id` 상수로 채움 |
+| `cd_index` | int | 선택 | 기본은 **파일 행 순서로 자동 생성**(`cd_index_source="row_order"`). 시퀀스 피쳐 전부가 측정 순서에 의존 |
+| `px_nm` | float | 선택 | 있으면 우선 사용. 없으면 **이미지별 `value_nm/기하 길이` 비의 중앙값으로 역산** |
+
+- 단위 처리: `value` → `value_nm` (Å이면 /10). 이후 로직은 `value_nm`만 본다.
+- px_nm 역산의 한계: 이미지 전체가 균일하게 밀린 계통 편향은 역산에 흡수된다 — 탐지는 이미지 증거(`delta_median`, G2) 몫. 행별 ratio 산포(CV>1%)는 doctor가 `W-DATA-07`로 경고.
+- 정합 피쳐: `value_mismatch_nm = value_nm − 기하 길이 × px_nm` (L3, GEOMETRY_ODD) — 좌표와 보고값이 따로 놀면 반응.
 
 - 파일 형식: CSV 또는 Parquet. 로더는 둘 다 지원.
 - **CSV 읽기는 반드시 사용자 제공 함수 `read_nasca_csv(csv_path)` 경유** (사내 CSV에 보안 프로그램이 걸려 있음). 함수는 `cdqc/func.py`(**gitignore 대상, 사용자 소유** — pull 충돌 방지)에 두고 pandas DataFrame을 반환한다. 파일이 없으면 `cdqc/func_default.py`(일반 `pandas.read_csv`)로 폴백 — 사외 개발용. 사내 작성 템플릿은 `cdqc/func.py.example`. cdqc 내부에서 다른 경로로 CSV를 읽는 코드는 금지.
@@ -105,6 +111,7 @@ DL 세그멘테이션 기반 레시피가 TEM 이미지에서 뽑은 CD 측정�
 | `obliquity` | 세그먼트 방향과 국소 엣지 접선이 이루는 각의 시퀀스 중앙값 대비 편차 (deg) | high | `oblique` |
 | `curv_s`, `curv_e` | 궤적 국소 곡률 (3점). **기본 비활성** — 노이즈와 진짜 곡률 구분 불가, `s_resid`가 대체. 리포트용으로만 계산 | high | `edge_jump` |
 | `angle` | 세그먼트 절대 각도 | — (코호트) | — |
+| `value_mismatch_nm` | 보고 측정값 − 기하 길이 × px_nm (nm) | both | 좌표·값 불일치 (레시피가 값과 좌표를 따로 계산한 경우) |
 
 ### 3.3 L2 — 카테고리 시퀀스 피쳐 (image × category)
 
@@ -209,14 +216,19 @@ labels         = "labels.csv"    # 선택. 검증용
 [data]
 format = "csv"                   # csv | parquet
 image_ext = ".png"
+value_unit = "nm"                # 단위 컬럼이 없을 때 폴백 (nm | angstrom)
+cd_index_source = "row_order"    # row_order(파일 행 순서로 생성) | column
+default_recipe_id = "R1"         # recipe_id 컬럼 없을 때 상수
 [data.columns]                   # 사용자 컬럼명 → 표준명 매핑
-recipe_id = "recipe_id"
+recipe_id = "recipe_id"          # 선택
 image_id = "image_id"
 image_path = "image_path"
 category_id = "category_id"
-cd_index = "cd_index"
+cd_index = "cd_index"            # cd_index_source="column"일 때만
 sx = "sx"; sy = "sy"; ex = "ex"; ey = "ey"
-px_nm = "px_nm"
+value = "value"                  # 필수
+unit  = ""                       # "" = 단위 컬럼 없음
+px_nm = "px_nm"                  # 선택 — 있으면 역산 대신 사용
 [data.coords]
 convention = "auto"              # auto | xy | rowcol ; auto면 doctor 결과 사용
 origin = "zero"                  # zero | one
@@ -262,6 +274,7 @@ noise_sigma = 0.05               # gray level. uint8 양자화로 MAD=0 가능
 dyn_range = 1.0
 delta_median_s = 0.05            # nm. subpixel 분해능 아래 MAD 증폭 방지
 delta_median_e = 0.05
+value_mismatch_nm = 0.02         # nm. 값-기하 정합은 정상에서 거의 0
 [cohort.log_features]
 names = ["rise_s","rise_e","margin_s","margin_e","dstep_s","dstep_e","cd_mad"]
 
@@ -363,6 +376,7 @@ error_codes = true               # 예외에 E-XXX-NN 코드 부착
 
 - Python/패키지 버전, 네트워크 호출 없음 확인
 - 스키마: 컬럼 존재, 타입, `cd_index` 중복/결측, `px_nm` 이미지 내 일관성
+- 데이터 계약: 단위 컬럼 고유값 분포, `cd_index` 출처(row_order|column), value/기하 ratio의 이미지별 robust CV — CV > 1%면 `W-DATA-07` (좌표와 보고값이 따로 계산됐을 가능성)
 - 이미지: 존재, uint8, shape
 - **좌표 컨벤션 자동 탐지**: 후보 8개 `{xy/rowcol} × {y_flip} × {origin 0/1}` (+ scale은 config에서)에 대해, **보고 좌표에서 세그먼트 축 방향 ±3px 안의 그래디언트 피크까지 거리(px, 포물선 subpixel)의 중앙값**을 점수로 (접선 방향 ±2px 리본 평균으로 노이즈 억제). 낮을수록 좋음: 맞으면 ~좌표 지터 수준, origin이 1px 어긋나면 ~1, 축이 뒤집히면 큼/OOB. ("평균 그래디언트 크기" 방식은 엣지 rise가 1px보다 넓으면 후보 간 차이가 원리적으로 작아 폐기.) 채택 조건: **1등 거리 ≤ 0.75px AND 2등/1등 비 ≥ 2** → `cache_dir/convention.json`에 저장. 비 < 1.3 또는 1등 > 1.5px → 경고 `W-CONV-01`. 점수표를 `out/summary/convention.txt`에 저장. (좌표 지터가 클수록 1등 거리가 올라가 origin 후보와의 비가 줄어든다 — 판별은 지터에 의해 근본적으로 제한됨.)
 - 좌표 양자화 검사: 소수부 히스토그램. 정수/반픽셀에 몰려 있으면 `delta` 분해능 하한 경고

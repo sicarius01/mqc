@@ -57,21 +57,25 @@ def read_nasca_csv(csv_path) -> pd.DataFrame:
 - `[data.columns]` — 사내 CSV 컬럼명 → 표준명 매핑
 - `[thresholds.tolerance_nm]` — 카테고리별 공차 (**필수 사용자 입력**, auto 없음)
 
-측정 레코드 CSV 예시 (CD 하나 = 한 행, `data/` 아래에 두면 전부 읽음):
+측정 레코드 CSV 예시 (CD 하나 = 한 행, `data/` 아래에 두면 파일명 정렬 순으로 전부 읽음):
 
 ```csv
-recipe_id,image_id,image_path,category_id,cd_index,sx,sy,ex,ey,px_nm
-RCP01,img_0001,images/img_0001.png,A,0,81.3,40.2,131.1,40.2,0.5
-RCP01,img_0001,images/img_0001.png,A,1,81.4,63.0,131.0,63.1,0.5
-RCP01,img_0001,images/img_0001.png,B,0,201.7,40.1,252.3,40.3,0.5
-RCP01,img_0002,images/img_0002.png,A,0,80.9,40.0,130.8,40.1,0.5
+image_id,image_path,category_id,sx,sy,ex,ey,value,unit
+img_0001,images/img_0001.png,A,81.3,40.2,131.1,40.2,249.1,Å
+img_0001,images/img_0001.png,A,81.4,63.0,131.0,63.1,24.8,nm
+img_0001,images/img_0001.png,B,201.7,40.1,252.3,40.3,253.0,Å
+img_0002,images/img_0002.png,A,80.9,40.0,130.8,40.1,24.95,nm
 ```
 
-- `(sx,sy)`·`(ex,ey)`는 서로 다른 두 엣지 위의 점, 잇는 선분 길이가 CD (px, subpixel 가능)
-- `cd_index`: ROI 내 측정 순서 — 시퀀스 피쳐 전부가 여기 의존
-- `px_nm`: 픽셀 크기 (nm/px), 이미지 안에서 동일해야 함
+- 필수 컬럼은 이 8개 + `value` 단위 정보뿐. 나머지는 자동:
+  - `px_nm` 없음 → 이미지별 `value/기하 길이` 비의 중앙값으로 역산 (있으면 우선 사용)
+  - `cd_index` 없음 → **파일 행 순서 = 측정 순서**로 자동 생성 (`cd_index_source`)
+  - `recipe_id` 없음 → `[data].default_recipe_id` 상수
+  - `unit` 컬럼 없으면 `[data].value_unit` 폴백. Å/nm 변형 자동 인식, 모르는 단위는 즉시 에러(추측 안 함)
+- `(sx,sy)`·`(ex,ey)`는 서로 다른 두 엣지 위의 점, 잇는 선분이 CD (px, subpixel 가능)
 - 좌표가 (x,y)인지 (row,col)인지 몰라도 됨 — `cdqc doctor`가 자동 탐지
-- 컬럼명이 다르면 `[data.columns]`에서 매핑 (파일을 고칠 필요 없음)
+- 컬럼명이 다르면 `[data.columns]`에서 매핑 (파일을 고칠 필요 없음). 단위 컬럼은
+  `[data.columns].unit = "단위컬럼명"`으로 지정
 
 ## 사내 첫날 체크리스트 (spec §10.1)
 
