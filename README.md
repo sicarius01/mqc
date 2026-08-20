@@ -1,126 +1,116 @@
-# cdqc — TEM CD 측정 품질 판정 툴
+# cdqc — TEM CD 측정 품질 판정용 연산 라이브러리
 
-DL 세그멘테이션 레시피가 뽑은 CD 측정값 `(sx, sy, ex, ey)`의 품질을,
-의미를 아는 피쳐(3계층: CD → 시퀀스 → 이미지)와 순차 게이트로 판정한다.
-설계 명세는 `cdqc_spec.md` (단일 진실원).
+DL 세그멘테이션 레시피가 뽑은 CD 측정값 `(sx, sy, ex, ey)`의 품질 판정에
+필요한 **연산만** 제공하는 순수 함수 라이브러리다. 피쳐 추출(CD/시퀀스/이미지),
+robust 통계, directed z, 판정 헬퍼까지 — 그 이상은 하지 않는다.
 
-## 사내 설치
+- **파일을 읽지 않는다.** CSV/이미지 로딩, 컬럼 정리는 전부 사용자 코드.
+- **워크플로우가 없다.** CLI·config 파일·출력 규약 없음. 함수 호출 → 리턴.
+- **기준을 정하지 않는다.** 코호트 분리·임계값·공차·판정 정책은 사용자 몫.
 
-사내에서 `pip install`이 가능하므로 그대로 설치하면 된다 (런타임 네트워크
-호출은 여전히 0 — 설치 때만 네트워크 사용).
+설계 문서: `cdqc_spec.md` (피쳐 의미·정규화 원리), `cdqc_change_02_library_api.md`.
 
-```
-python --version                       # 3.13.x 확인
-python -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt
-```
-
-> 백업 경로: 혹시 pip이 막힌 환경이면 사외에서 `scripts\fetch_wheels.ps1`로
-> `wheels/`를 채워 반입한 뒤
-> `pip install --no-index --find-links wheels -r requirements.txt`
-
-## 사내 세팅 2가지 (사용자가 넣어야 하는 것)
-
-### 1. `cdqc/func.py` — 보안 CSV 읽기 함수
-
-사내 CSV는 보안 프로그램이 걸려 있어 일반 읽기가 안 되므로, 모든 CSV 읽기는
-사용자 제공 함수 `read_nasca_csv()` 하나만 경유한다.
-
-- **`cdqc/func.py`는 gitignore 대상** — 사내에서 작성해도 `git pull` 충돌이
-  나지 않는다.
-- 파일이 없으면 기본 구현(일반 `pandas.read_csv`)으로 폴백된다 (사외 개발용).
-- 템플릿 복사 후 사내 로직을 채운다:
+## 설치 (사내)
 
 ```
-copy cdqc\func.py.example cdqc\func.py
+git clone https://github.com/sicarius01/mqc.git
+cd mqc
+pip install -e .
 ```
+
+- `-e .` = **editable 설치**: 패키지를 복사하지 않고 이 레포 폴더를 직접 참조하게
+  등록한다. 이후 어느 경로에서든 `import cdqc`가 되고, **`git pull`만 받으면
+  재설치 없이 새 코드가 바로 반영**된다.
+- venv를 쓰는 경우: `python -m venv .venv` → `.venv\Scripts\activate` → 위와 동일.
+- 의존성(numpy, scipy, pandas, opencv-python-headless — 4개, 버전 핀)은
+  `pip install -e .` 가 pyproject.toml을 보고 같이 설치한다.
+- 확인: `python -c "import cdqc; print(cdqc.__version__)"` → `0.2.0`
+
+## 입력 계약
+
+| 항목 | 형식 |
+|---|---|
+| 좌표 `S`, `E` | `(n,2)` float ndarray, **(x=col, y=row), zero-origin, 이미지 픽셀** |
+| 시퀀스 | 한 번의 `extract_l3` 호출 = 한 (이미지 × CD 카테고리). **측정 순서대로 정렬**해서 넣을 것 (시퀀스 피쳐가 순서에 의존) |
+| 이미지 | `np.ndarray[uint8]`, shape (H, W). `None`이면 기하 피쳐만 |
+| 길이 단위 | 함수 경계에서 항상 **nm** (`to_nm`, `infer_px_nm` 유틸 참고) |
+| DataFrame | pandas 입출력 |
+
+## 사용 예제 (사내 코드 골격)
 
 ```python
-# cdqc/func.py — 예시 (자세한 변형은 cdqc/func.py.example 참조)
+import cv2
+import numpy as np
 import pandas as pd
+import cdqc
 
-def read_nasca_csv(csv_path) -> pd.DataFrame:
-    # 사내 보안 SDK가 평문 바이트를 돌려주는 경우:
-    # import io
-    # from nasca_sdk import decrypt_to_bytes
-    # return pd.read_csv(io.BytesIO(decrypt_to_bytes(str(csv_path))))
-    return pd.read_csv(csv_path)
+p = cdqc.Params()                       # 연산 파라미터 (기본값 내장, 필드 수정 가능)
+
+# ── 1) 데이터 준비: 전부 사용자 코드 ─────────────────────────────────
+df = my_read_csv(...)                    # 사내 보안 CSV → DataFrame (컬럼 정리 포함)
+images = {iid: cv2.imread(pth, cv2.IMREAD_GRAYSCALE) for iid, pth in ...}
+
+# 단위 → nm (Å/nm 자동 인식, 모르는 단위는 즉시 에러)
+df["value_nm"] = cdqc.to_nm(df["value"].to_numpy(), df["unit"].to_numpy())
+
+# 좌표 컨벤션이 불확실하면 후보 점수표 (판단은 사람이)
+# table = cdqc.convention_scores([(images[i], S_raw, E_raw), ...])
+
+# ── 2) 피쳐 추출: 시퀀스(이미지×카테고리) 단위 호출 ──────────────────
+parts = []
+for (iid, cat), g in df.groupby(["image_id", "category_id"], sort=False):
+    S = g[["sx", "sy"]].to_numpy()       # 측정 순서대로 정렬돼 있어야 함
+    E = g[["ex", "ey"]].to_numpy()
+    px = cdqc.infer_px_nm(S, E, g["value_nm"].to_numpy())   # 또는 아는 값
+    f = cdqc.extract_l3(images[iid], S, E, px,
+                        value_nm=g["value_nm"].to_numpy(), params=p)
+    parts.append(f.assign(image_id=iid, category_id=cat))
+l3 = pd.concat(parts, ignore_index=True)
+
+l2 = cdqc.extract_l2(l3, ["image_id", "category_id"], p)
+l1 = pd.DataFrame([{"image_id": iid, **cdqc.extract_l1(img, p)}
+                   for iid, img in images.items()])
+
+# ── 3) 정규화: 코호트는 사용자가 자름 (예: 카테고리별) ────────────────
+z_parts = []
+for cat, g in l3.groupby("category_id"):
+    normal = g[...]                      # 정상으로 간주할 행 선택 — 사용자 판단
+    stats = cdqc.cohort_stats(normal, params=p)   # 평범한 dict — 저장/로드 자유
+    z_parts.append(cdqc.apply_z(g, stats, p))     # z_*(directed) + zs_*(부호) 추가
+z = pd.concat(z_parts)
+
+# ── 4) 판정: 기준은 사용자, 연산은 헬퍼 ──────────────────────────────
+top = cdqc.top_feature(z)                          # 행별 최대 z + 피쳐 + 사유코드
+t_soft = cdqc.threshold_from_quantile(top_normal["top_z"], 0.90)
+flag = top["top_z"] > t_soft
+impact = cdqc.impact_nm(seq["cd_nm"], seq_flags)   # 공차(nm)와 직접 비교
+run = cdqc.max_run(seq_flags)                      # 뭉침 vs 산발
 ```
 
-계약: `read_nasca_csv(csv_path) -> pandas.DataFrame`. `csv_path`는 str 또는
-`pathlib.Path`. 컬럼명 매핑/타입 캐스팅은 cdqc가 하므로 CSV 내용 그대로
-반환하면 된다.
+## API 요약
 
-### 2. `config.toml` — 경로·컬럼 매핑·공차
-
-- `[project].root` — 사내 데이터 위치 기준. 이것만 바꾸면 되게 설계됨
-- `[data.columns]` — 사내 CSV 컬럼명 → 표준명 매핑
-- `[thresholds.tolerance_nm]` — 카테고리별 공차 (**필수 사용자 입력**, auto 없음)
-
-측정 레코드 CSV 예시 (CD 하나 = 한 행, `data/` 아래에 두면 파일명 정렬 순으로 전부 읽음):
-
-```csv
-image_id,image_path,category_id,sx,sy,ex,ey,value,unit
-img_0001,images/img_0001.png,A,81.3,40.2,131.1,40.2,249.1,Å
-img_0001,images/img_0001.png,A,81.4,63.0,131.0,63.1,24.8,nm
-img_0001,images/img_0001.png,B,201.7,40.1,252.3,40.3,253.0,Å
-img_0002,images/img_0002.png,A,80.9,40.0,130.8,40.1,24.95,nm
-```
-
-- 필수 컬럼은 이 8개 + `value` 단위 정보뿐. 나머지는 자동:
-  - `px_nm` 없음 → 이미지별 `value/기하 길이` 비의 중앙값으로 역산 (있으면 우선 사용)
-  - `cd_index` 없음 → **파일 행 순서 = 측정 순서**로 자동 생성 (`cd_index_source`)
-  - `recipe_id` 없음 → `[data].default_recipe_id` 상수
-  - `unit` 컬럼 없으면 `[data].value_unit` 폴백. Å/nm 변형 자동 인식, 모르는 단위는 즉시 에러(추측 안 함)
-- `(sx,sy)`·`(ex,ey)`는 서로 다른 두 엣지 위의 점, 잇는 선분이 CD (px, subpixel 가능)
-- 좌표가 (x,y)인지 (row,col)인지 몰라도 됨 — `cdqc doctor`가 자동 탐지
-- 컬럼명이 다르면 `[data.columns]`에서 매핑 (파일을 고칠 필요 없음). 단위 컬럼은
-  `[data.columns].unit = "단위컬럼명"`으로 지정
-
-## 사내 첫날 체크리스트 (spec §10.1)
-
-```
-python -m cdqc doctor        # 좌표 컨벤션 점수표 — 채택 안 되면 멈추고 상의
-python -m cdqc extract
-python -m cdqc calibrate     # calibrated.toml 생성 (auto 임계값)
-                             # 불량률 높은 데이터면: --baseline 정상목록.txt
-                             #   (정상 image_id 한 줄에 하나 — 분위 기반 임계값 오염 방지)
-python -m cdqc run
-# out/internal/overlay 20장 눈으로 확인 (세그먼트가 실제 엣지 사이에 놓이는지)
-# out/summary/ 검토: feature_stats(결측률·skew), correlation(|r|>0.9),
-#                    gate_counts(플래그율: CD 10~20%, 이미지 수 % 목표)
-```
-
-## 명령어
-
-| 명령 | 역할 |
+| 함수 | 역할 |
 |---|---|
-| `cdqc doctor` | 환경·스키마·좌표 컨벤션 점검 (실행 첫날 필수) |
-| `cdqc synth` | 합성 데이터셋 생성 → `data/synth/` |
-| `cdqc selftest` | 합성 전 파이프라인 감도/특이도 검증. 전부 PASS면 exit 0 |
-| `cdqc extract` | 피쳐 추출 → `out/cache/*.parquet` (캐시, `--force` 재추출) |
-| `cdqc calibrate` | 코호트 통계 + auto 임계값 → `calibrated.toml` |
-| `cdqc run` | 정규화 → 판정 → 리포트 (`--sweep key=v1,v2,..` 지원) |
-| `cdqc evaluate` | `labels.csv` 기반 재현율/국소화/ablation |
-| `cdqc explore` | 플래그 CD 클러스터링 (선택 의존성 scikit-learn) |
+| `extract_l3(img, S, E, px_nm, value_nm=None, params)` | 시퀀스 하나 → CD별 피쳐 (delta/cnr/rise/margin/npk/overshoot/plateau/pol/edge_valid + cd_nm/잔차/dstep/obliquity/value_mismatch) |
+| `extract_l2(l3_df, group_cols, params)` | 시퀀스별 요약 (n_cd, cd_median/mad, delta_median, traj_rms) |
+| `extract_l1(img, params)` | 이미지 전역 피쳐 (noise/sat/dyn_range/struct_energy/tile_cv + hist) |
+| `cohort_stats(df, params)` | 받은 행 전체 = 한 코호트. 피쳐별 robust 통계 (JSON 가능 dict) |
+| `apply_z(df, stats, params)` | directed z (`z_*`) + 부호 z (`zs_*`, both 피쳐) 추가 |
+| `top_feature(z_df)` | 행별 최대 z·피쳐·사유코드 (curv는 기본 제외) |
+| `threshold_from_quantile(values, q)` | 분위수 임계값 계산 |
+| `impact_nm(cd_nm, flags, stat)` | 플래그 제외 시 통계량 변화 (nm) |
+| `max_run(flags)` / `hist_emd(h, t)` / `robust_stats(x)` | 판정·비교 연산 |
+| `to_nm` / `normalize_unit` / `infer_px_nm` / `ratio_cv` | 단위·px_nm 유틸 |
+| `transform_coords` / `convention_scores` | 좌표 컨벤션 변환·후보 점수표 |
+| `Params` / `FEATURES` | 연산 파라미터 dataclass / 피쳐 메타데이터 registry |
 
-공통 옵션: `--config config.toml` `--root PATH` `--set key=value` (여러 번 가능)
-
-예: `python -m cdqc run --set thresholds.t_soft=3.0 --sweep thresholds.t_soft=2,2.5,3,4`
-
-## 출력
-
-- `out/internal/` — **사내 전용** (이미지·nm·좌표 포함): per_cd/per_seq/per_image
-  parquet, `report.html`(오프라인 self-contained), `overlay/*.png`
-- `out/summary/` — 무차원 요약 (반출 여부는 사용자가 규정 보고 판단):
-  feature_stats, correlation, gate_counts, convention, selftest, version
-
-## 개발 (사외)
+## 개발 검증 (사외 전용 — 사내 사용과 무관)
 
 ```
-python -m cdqc synth && python -m cdqc selftest   # 자가검증 (39개 감도/특이도 셀)
-python -m pytest tests -q                          # 단위 테스트
+python -m cdqc.selftest      # 합성 데이터 감도/특이도 39셀 — 전부 PASS여야 함
+python -m pytest tests -q    # 단위 테스트
 ```
 
-합성 PASS는 "기계적으로 맞다"는 뜻이지 실제 TEM 실패를 잡는다는 증명이
-아니다. 유효성은 사내 라벨로만 증명한다 (spec §1).
+selftest는 공개 API만 사용해 조립돼 있어(사내 사용자 코드와 같은 모양) API
+자체의 검증이기도 하다. 합성 PASS는 "기계적으로 맞다"는 뜻이지 실제 TEM
+실패를 잡는다는 증명이 아니다 — 유효성은 실데이터 라벨로만 증명한다.
