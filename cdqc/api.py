@@ -17,7 +17,9 @@ import pandas as pd
 from .errors import CdqcError
 from .features.l1 import hist_emd, l1_image_features
 from .features.l3 import l3_sequence_features
+from .features.mask import mask_image_features, mask_l3_features
 from .features.registry import BY_NAME, REGISTRY, Z_ON_BAD, features_of
+from .geometry import circular_mad_deg180, circular_median_deg180
 from .params import Params
 
 LOG_EPS = 1e-3   # log 피쳐 변환 오프셋: log(x + LOG_EPS)
@@ -73,7 +75,13 @@ def extract_l3(img: np.ndarray | None, S, E, px_nm: float,
         feats["value_mismatch_nm"] = v - feats["cd_nm"]
 
     order = [f.name for f in features_of("l3") if f.name in feats]
-    return pd.DataFrame({name: feats[name] for name in order})
+    out = pd.DataFrame({name: feats[name] for name in order})
+    # 캐리어 컬럼 (피쳐 아님): extract_l2의 pitch/span 계산과 오버레이용
+    mid = (S + E) / 2.0
+    out["mid_x"] = mid[:, 0]
+    out["mid_y"] = mid[:, 1]
+    out["px_nm"] = float(px_nm)
+    return out
 
 
 def extract_l2(l3_df: pd.DataFrame, group_cols: list[str] | None = None,
@@ -100,6 +108,20 @@ def extract_l2(l3_df: pd.DataFrame, group_cols: list[str] | None = None,
             x = g[c].to_numpy(dtype=np.float64) if c in g else np.array([np.nan])
             out[name] = (float(np.sqrt(np.nanmean(x ** 2)))
                          if np.isfinite(x).any() else np.nan)
+        # 총체적 실패 축 (변경 #03 §2): 개별 CD z로는 희석되는 시퀀스 전체 이상
+        ang = (g["angle"].to_numpy(dtype=np.float64) if "angle" in g
+               else np.array([np.nan]))
+        out["angle_median"] = circular_median_deg180(ang)
+        out["angle_spread"] = circular_mad_deg180(ang)
+        if {"mid_x", "mid_y", "px_nm"} <= set(g.columns) and len(g) >= 2:
+            mid = g[["mid_x", "mid_y"]].to_numpy(dtype=np.float64)
+            px = float(g["px_nm"].iloc[0])
+            steps = np.linalg.norm(np.diff(mid, axis=0), axis=1) * px
+            out["pitch_median"] = float(np.median(steps))
+            out["span_nm"] = float(np.linalg.norm(mid[-1] - mid[0]) * px)
+        else:
+            out["pitch_median"] = np.nan
+            out["span_nm"] = np.nan
         return out
 
     if group_cols is None:
@@ -121,6 +143,50 @@ def extract_l1(img: np.ndarray, params: Params | None = None) -> dict:
     if img is None:
         raise CdqcError("E-ARG-02", "None")
     return l1_image_features(img)
+
+
+# ================================================================ 마스크 피쳐
+
+def _check_mask(mask, img: np.ndarray) -> np.ndarray:
+    if not (isinstance(mask, np.ndarray) and mask.ndim == 2):
+        raise CdqcError("E-ARG-02", f"mask: {type(mask).__name__}")
+    if mask.shape != img.shape:
+        raise CdqcError("E-ARG-07", f"mask{mask.shape} vs img{img.shape}")
+    return mask.astype(bool)
+
+
+def extract_mask_l3(mask: np.ndarray, img: np.ndarray, S, E, px_nm: float,
+                    params: Params | None = None) -> pd.DataFrame:
+    """한 시퀀스의 CD별 마스크 정합 피쳐 (mdist/mgrad/minside).
+
+    마스크는 이진 ndarray (bool 또는 uint8 0/비0), 이미지와 같은 shape —
+    라벨맵의 클래스별 이진 분리·리사이즈는 사용자가 명시적으로 한다.
+    extract_l3 출력과 행 순서가 같으므로 index로 join해서 쓴다.
+    """
+    params = params or Params()
+    _check_image(img)
+    if img is None:
+        raise CdqcError("E-ARG-02", "mask 피쳐는 이미지가 필요함 (mgrad)")
+    m = _check_mask(mask, img)
+    S, E = _check_points(S, E)
+    if not (np.isfinite(px_nm) and px_nm > 0):
+        raise CdqcError("E-ARG-06", f"px_nm={px_nm}")
+    feats = mask_l3_features(m, img, S, E, float(px_nm), params.view())
+    order = [f.name for f in features_of("l3") if f.name in feats]
+    return pd.DataFrame({name: feats[name] for name in order})
+
+
+def extract_mask_image(mask: np.ndarray, img: np.ndarray,
+                       params: Params | None = None) -> dict:
+    """마스크 전체의 이미지 레벨 피쳐 (registry level="lm").
+
+    코호트 축 주의: 마스크는 보통 (이미지 × 클래스)당 하나 — L1과 축이 다를
+    수 있다. 코호트 분리는 사용자 몫 (cohort_stats/apply_z는 이름으로 동작).
+    """
+    _check_image(img)
+    if img is None:
+        raise CdqcError("E-ARG-02", "None")
+    return mask_image_features(_check_mask(mask, img), img)
 
 
 # ================================================================ 통계·정규화
@@ -316,3 +382,71 @@ def max_run(flags) -> int:
         cur = cur + 1 if f else 0
         best = max(best, cur)
     return best
+
+
+# ================================================================ 평가 헬퍼
+# 라벨은 사용자가 만든다 — cdqc는 연산만 (변경 #03 §3).
+
+def recall_at_fpr(scores_bad, scores_good, fpr: float = 0.05) -> dict:
+    """정상 점수 (1−fpr) 분위 임계값에서의 불량 재현율.
+
+    반환: {"threshold", "recall", "fpr_actual", "n_bad", "n_good", "n_nan"}.
+    NaN 점수는 제외하고 개수만 보고한다.
+    """
+    b = np.asarray(scores_bad, dtype=np.float64)
+    g = np.asarray(scores_good, dtype=np.float64)
+    n_nan = int((~np.isfinite(b)).sum() + (~np.isfinite(g)).sum())
+    b, g = b[np.isfinite(b)], g[np.isfinite(g)]
+    if len(g) == 0 or len(b) == 0:
+        raise CdqcError("E-ARG-04", f"bad={len(b)}, good={len(g)}")
+    thr = float(np.quantile(g, 1 - fpr))
+    return {"threshold": thr,
+            "recall": float(np.mean(b > thr)),
+            "fpr_actual": float(np.mean(g > thr)),
+            "n_bad": int(len(b)), "n_good": int(len(g)), "n_nan": n_nan}
+
+
+def localization_hit(top_idx_pred, bad_idx_true, k: int = 1) -> bool:
+    """불량 시퀀스 하나: 예측 top-k CD가 실제 불량 CD와 겹치는가.
+
+    top_idx_pred: 점수 내림차순으로 정렬된 CD 인덱스 시퀀스 (set 불가 — 순서 필요).
+    bad_idx_true: 실제 불량 CD 인덱스 (set/리스트/스칼라 무엇이든).
+    """
+    if isinstance(top_idx_pred, (set, frozenset)):
+        raise CdqcError("E-ARG-01", "top_idx_pred는 순서 있는 시퀀스여야 함 (점수 내림차순)")
+    pred = [int(p) for p in np.atleast_1d(np.asarray(top_idx_pred)).ravel()[:k]]
+    if np.isscalar(bad_idx_true):
+        true = {int(bad_idx_true)}
+    else:
+        true = {int(t) for t in bad_idx_true}
+    return bool(true and any(p in true for p in pred))
+
+
+def localization_rate(preds: list, trues: list, k: int = 1) -> float:
+    """불량 시퀀스들에서 top-k 국소화 적중률. preds[i]/trues[i]가 한 시퀀스."""
+    if len(preds) != len(trues):
+        raise CdqcError("E-ARG-01", f"preds {len(preds)} vs trues {len(trues)}")
+    if not preds:
+        raise CdqcError("E-ARG-04", "빈 목록")
+    return float(np.mean([localization_hit(p, t, k) for p, t in zip(preds, trues)]))
+
+
+def ablation_table(z_df: pd.DataFrame, feature_sets: dict[str, list[str]],
+                   labels, fpr: float = 0.05,
+                   params: Params | None = None) -> pd.DataFrame:
+    """피쳐 셋별 recall_at_fpr 비교표 — 어떤 피쳐 층이 재현율을 올리는지.
+
+    z_df: apply_z를 거친 프레임 (행 = 점수를 매길 단위 — CD든 시퀀스든 사용자
+    정의). labels: z_df와 정렬된 bool 배열 (True = 불량). 각 셋에 대해
+    top_feature를 재계산해 top_z를 점수로 쓴다.
+    """
+    lab = np.asarray(labels, dtype=bool)
+    if len(lab) != len(z_df):
+        raise CdqcError("E-ARG-01", f"labels {len(lab)} vs z_df {len(z_df)}")
+    rows = []
+    for name, cols in feature_sets.items():
+        scores = top_feature(z_df, feature_cols=cols, params=params)["top_z"] \
+            .to_numpy(dtype=np.float64)
+        r = recall_at_fpr(scores[lab], scores[~lab], fpr)
+        rows.append({"set": name, "n_features": len(cols), **r})
+    return pd.DataFrame(rows)

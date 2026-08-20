@@ -24,6 +24,11 @@ def _default_mad_floors() -> dict[str, float]:
         "dyn_range": 1.0,
         "delta_median_s": 0.05, "delta_median_e": 0.05,   # nm (subpixel 분해능)
         "value_mismatch_nm": 0.02,                  # nm
+        "mdist_s": 0.05, "mdist_e": 0.05,           # nm (마스크 경계 픽셀 양자화)
+        "mask_n_components": 0.5,                   # 정수
+        "mask_hole_frac": 0.002,
+        "mask_area_frac": 0.002,
+        "angle_spread": 0.05,                       # deg
     }
 
 

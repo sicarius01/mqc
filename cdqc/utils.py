@@ -87,6 +87,38 @@ def ratio_cv(S: np.ndarray, E: np.ndarray, value_nm: np.ndarray) -> float:
     return float(1.4826 * np.median(np.abs(r - med)) / max(abs(med), 1e-12))
 
 
+# ---------------------------------------------------------------- 이미지 변환
+
+def to_uint8(img: np.ndarray, method: str = "percentile",
+             p: tuple[float, float] = (0.5, 99.5)) -> np.ndarray:
+    """uint16/float 이미지 → uint8. 이미 uint8이면 그대로 반환 (복사 없음).
+
+    - "percentile" (기본): p 분위 구간을 0..255로 스트레치.
+    - "shift": uint16 상위 8비트 (>>8). 절대 스케일 보존.
+
+    **주의**: 이미지별 percentile 스트레치는 절대 밝기 정보를 없앤다 —
+    `dyn_range`/`sat_lo`/`sat_hi` 같은 L1 피쳐는 스트레치 전 원본에서 의미가
+    있으므로, 16-bit 원본을 쓸 경우 L1은 변환 전 이미지로 따로 계산하는 것을
+    권장한다 (스트레치 후에는 dyn_range가 언제나 비슷해지고 sat는 p에 의해
+    인위로 생긴다).
+    """
+    if not isinstance(img, np.ndarray) or img.ndim != 2:
+        raise CdqcError("E-ARG-02", f"{type(img).__name__}")
+    if img.dtype == np.uint8:
+        return img
+    if method == "shift":
+        if img.dtype != np.uint16:
+            raise CdqcError("E-ARG-06", f"shift는 uint16 전용 (got {img.dtype})")
+        return (img >> 8).astype(np.uint8)
+    if method != "percentile":
+        raise CdqcError("E-ARG-06", f"method={method!r}")
+    f = img.astype(np.float64)
+    lo, hi = np.percentile(f, list(p))
+    if hi <= lo:
+        return np.zeros(img.shape, dtype=np.uint8)
+    return np.clip((f - lo) / (hi - lo) * 255.0, 0, 255).astype(np.uint8)
+
+
 # ---------------------------------------------------------------- 좌표 컨벤션
 
 def transform_coords(xs, ys, conv: dict, shape: tuple[int, int]

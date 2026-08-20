@@ -77,6 +77,12 @@ REGISTRY: list[Feature] = [
     _F("curv_e", "l3", "z", "high", "E 궤적 3점 국소 곡률(nm)", "SEQUENCE_JUMP", enabled_default=False),
     _F("angle", "l3", "z", "both", "세그먼트 절대 각도(deg) — 코호트 대비", "GEOMETRY_ODD"),
     _F("value_mismatch_nm", "l3", "z", "both", "보고 측정값과 좌표 기하 길이의 차(nm) — 좌표·값 불일치 감지", "GEOMETRY_ODD"),
+    # ---- L3 마스크 정합 (extract_mask_l3 — 마스크가 있는 카테고리만) --------
+    _F("mdist_s", "l3", "z", "high", "보고 S좌표 ↔ 가장 가까운 마스크 경계 거리(nm)", "POSITION_MISMATCH"),
+    _F("mdist_e", "l3", "z", "high", "보고 E좌표 ↔ 가장 가까운 마스크 경계 거리(nm)", "POSITION_MISMATCH"),
+    _F("mgrad_s", "l3", "z", "low", "S 최근접 마스크 경계점의 이미지 그래디언트/국소 σ — DL 경계가 실제 전이 위인가", "POSITION_MISMATCH"),
+    _F("mgrad_e", "l3", "z", "low", "E 최근접 마스크 경계점의 이미지 그래디언트/국소 σ", "POSITION_MISMATCH"),
+    _F("minside", "l3", "bool", "-", "세그먼트 중점이 마스크 내부 — CD가 마스크 구조를 실제로 가로지르는가", "GEOMETRY_ODD"),
     # ---- L2 카테고리 시퀀스 (image × category) ------------------------------
     _F("n_cd", "l2", "z", "both", "CD 개수 — 코호트 최빈값 대비 (missing 감지)", g2=True),
     _F("frac_flagged", "l2", "z", "high", "L3 플래그 비율", computed_at="run"),
@@ -87,6 +93,11 @@ REGISTRY: list[Feature] = [
     _F("delta_median_e", "l2", "z", "both", "E delta 시퀀스 중앙값(nm)", g2=True),
     _F("traj_rms_s", "l2", "z", "high", "S 궤적 잔차 RMS(nm)"),
     _F("traj_rms_e", "l2", "z", "high", "E 궤적 잔차 RMS(nm)"),
+    # ---- L2 총체적 실패 (시퀀스 전체가 다른 모양 — 변경 #03 §2) -------------
+    _F("angle_median", "l2", "z", "both", "세그먼트 각도의 원형 중앙값(deg, 180° 주기) — 기준 각도 오설정. 코호트가 ±90° 랩 경계 근처면 주의", g2=True),
+    _F("angle_spread", "l2", "z", "high", "각도의 원형 MAD(deg) — 방향이 뒤죽박죽인 시퀀스", g2=True),
+    _F("pitch_median", "l2", "z", "both", "이웃 CD 중점 간 거리 중앙값(nm) — 측정 간격 설정 오류", g2=True),
+    _F("span_nm", "l2", "z", "both", "첫/끝 CD 중점 간 거리(nm) — ROI 길이가 다름", g2=True),
     _F("impact_nm", "l2", "physical", "high", "플래그 CD 제외 시 보고 통계량 변화(nm) — G1, 공차와 직접 비교", computed_at="run"),
     # ---- L1 이미지 (측정 무관 OOD) ------------------------------------------
     _F("noise_sigma", "l1", "z", "high", "Laplacian 고주파 잔차 MAD×1.4826 — 노이즈 수준", g0=True),
@@ -97,6 +108,13 @@ REGISTRY: list[Feature] = [
     _F("struct_energy", "l1", "z", "low", "그래디언트 p90 / noise_sigma — 구조 대비 노이즈", g0=True),
     _F("tile_energy_cv", "l1", "z", "high", "타일별 struct_energy CV — 부분 손상", g0=True),
     _F("n_bad_categories", "l1", "rollup", "-", "이미지 내 L2 게이트 발동 카테고리 수 (롤업)", computed_at="run"),
+    # ---- LM 마스크 이미지 레벨 (extract_mask_image — 이미지×클래스당 하나.
+    #      L1과 코호트 축이 다를 수 있음. 코호트 분리는 사용자 몫) ------------
+    _F("mask_grad_agree", "lm", "z", "low", "마스크 경계 전체의 이미지 그래디언트 중앙값/노이즈 σ — DL이 헛것을 그렸는지의 단일 지표"),
+    _F("mask_n_components", "lm", "z", "both", "연결 성분 수 (8-이웃)"),
+    _F("mask_hole_frac", "lm", "z", "high", "성분 내부 구멍 픽셀 비율"),
+    _F("mask_boundary_rough", "lm", "z", "high", "경계 둘레/등면적 원 둘레 (16px 이상 성분별 중앙값) — 매끄러움 대리"),
+    _F("mask_area_frac", "lm", "z", "both", "마스크 픽셀 비율"),
 ]
 
 BY_NAME: dict[str, Feature] = {f.name: f for f in REGISTRY}

@@ -172,3 +172,29 @@ def obliquity_deg(seg_dir: np.ndarray, edge_tangent: np.ndarray) -> np.ndarray:
 def segment_angle_deg(seg: np.ndarray) -> np.ndarray:
     """세그먼트 절대 각도 (deg, [-180, 180))."""
     return np.degrees(np.arctan2(seg[:, 1], seg[:, 0]))
+
+
+def circular_median_deg180(angles_deg: np.ndarray) -> float:
+    """180° 주기 각도의 원형 중앙값 (deg, (-90, 90]).
+
+    세그먼트 방향은 부호가 없으므로(θ ≡ θ+180°) 단순 median은 ±90° 경계에서
+    깨진다 — atan2(median(sin2θ), median(cos2θ))/2 방식 (spec 변경 #03 §2).
+    """
+    a = np.asarray(angles_deg, dtype=np.float64)
+    a = a[np.isfinite(a)]
+    if len(a) == 0:
+        return np.nan
+    t2 = np.radians(2.0 * a)
+    return float(np.degrees(np.arctan2(np.median(np.sin(t2)),
+                                       np.median(np.cos(t2)))) / 2.0)
+
+
+def circular_mad_deg180(angles_deg: np.ndarray) -> float:
+    """180° 주기 각도의 원형 MAD (deg): 원형 중앙값 대비 랩된 편차의 중앙값."""
+    a = np.asarray(angles_deg, dtype=np.float64)
+    a = a[np.isfinite(a)]
+    if len(a) == 0:
+        return np.nan
+    med = circular_median_deg180(a)
+    dev = np.mod(a - med + 90.0, 180.0) - 90.0   # [-90, 90)
+    return float(np.median(np.abs(dev)))

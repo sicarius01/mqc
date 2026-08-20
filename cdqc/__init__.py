@@ -12,26 +12,30 @@
     top = cdqc.top_feature(z)
 """
 
-from .api import (apply_z, cohort_stats, extract_l1, extract_l2, extract_l3,
-                  hist_emd, impact_nm, max_run, robust_stats,
+from .api import (ablation_table, apply_z, cohort_stats, extract_l1,
+                  extract_l2, extract_l3, extract_mask_image, extract_mask_l3,
+                  hist_emd, impact_nm, localization_hit, localization_rate,
+                  max_run, recall_at_fpr, robust_stats,
                   threshold_from_quantile, top_feature)
 from .errors import ERROR_CODES, CdqcError
 from .features.registry import BY_NAME, REASONS, REGISTRY, Z_ON_BAD
 from .params import Params
 from .utils import (convention_candidates, convention_scores, infer_px_nm,
-                    normalize_unit, ratio_cv, to_nm, transform_coords)
+                    normalize_unit, ratio_cv, to_nm, to_uint8, transform_coords)
 
 FEATURES = REGISTRY   # 피쳐 메타데이터 공개 별칭 (이름/worse_when/사유코드/설명)
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "Params",
     "extract_l3", "extract_l2", "extract_l1",
+    "extract_mask_l3", "extract_mask_image",
     "cohort_stats", "apply_z", "robust_stats", "threshold_from_quantile",
     "top_feature", "impact_nm", "max_run", "hist_emd",
+    "recall_at_fpr", "localization_hit", "localization_rate", "ablation_table",
     "transform_coords", "convention_scores", "convention_candidates",
-    "normalize_unit", "to_nm", "infer_px_nm", "ratio_cv",
+    "normalize_unit", "to_nm", "to_uint8", "infer_px_nm", "ratio_cv",
     "FEATURES", "REGISTRY", "BY_NAME", "REASONS", "Z_ON_BAD",
     "CdqcError", "ERROR_CODES",
 ]
