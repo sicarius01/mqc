@@ -4,8 +4,6 @@ __pycache__/
 .pytest_cache/
 out/
 data/synth/
-calibrated.toml
-cdqc/func.py
 wheels/*.whl
 *.egg-info/
 build/
