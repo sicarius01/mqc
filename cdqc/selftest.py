@@ -21,7 +21,8 @@ import numpy as np
 import pandas as pd
 
 from .api import (apply_z, cohort_stats, extract_l1, extract_l2, extract_l3,
-                  hist_emd, threshold_from_quantile, top_feature)
+                  extract_mask_image, extract_mask_l3, hist_emd,
+                  threshold_from_quantile, top_feature)
 from .params import Params
 from .synth.generator import SynthParams, generate_dataset
 from .utils import infer_px_nm, to_nm
@@ -83,6 +84,23 @@ EXPECTATIONS: dict[str, dict[str, list[tuple[str, str, str]]]] = {
         "respond": [("tile_energy_cv", "l1", "all")],
         "silent": [("delta_s", "l3", "unaffected")],
     },
+    # ---- 마스크 주입 (변경 #03 §1-d) --------------------------------------
+    "mask_shift": {
+        "respond": [("mdist_s", "l3", "affected"), ("mdist_e", "l3", "affected"),
+                    ("mgrad_s", "l3", "affected"), ("mgrad_e", "l3", "affected"),
+                    ("mask_grad_agree", "lm", "all")],
+        "silent": [("cnr_s", "l3", "affected"), ("delta_s", "l3", "affected")],
+    },
+    "mask_ragged": {
+        "respond": [("mask_boundary_rough", "lm", "all"),
+                    ("mask_n_components", "lm", "all")],
+        "silent": [("mdist_s", "l3", "affected")],
+    },
+    # ---- 총체적 실패 (변경 #03 §2) ----------------------------------------
+    "rotated_frame": {
+        "respond": [("angle_median", "l2", "all"), ("n_cd", "l2", "all")],
+        "silent": [("delta_s", "l3", "affected")],
+    },
 }
 
 _TRUTH_COLS = ("image_id", "category_id", "cd_index",
@@ -90,8 +108,9 @@ _TRUTH_COLS = ("image_id", "category_id", "cd_index",
 
 
 def build_frames(records: pd.DataFrame, images: dict[str, np.ndarray],
-                 params: Params) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """공개 API로 L3/L2/L1 프레임 조립 — 사내 사용자 코드와 같은 모양."""
+                 masks: dict, params: Params
+                 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """공개 API로 L3/L2/L1/LM 프레임 조립 — 사내 사용자 코드와 같은 모양."""
     records = records.copy()
     records["value_nm"] = to_nm(records["value"].to_numpy(),
                                 records["unit"].to_numpy())
@@ -102,14 +121,22 @@ def build_frames(records: pd.DataFrame, images: dict[str, np.ndarray],
              for iid, g in records.groupby("image_id", sort=False)}
 
     parts = []
+    lm_rows = []
     for (iid, cat), g in records.groupby(["image_id", "category_id"], sort=False):
-        f = extract_l3(images[iid],
-                       g[["sx", "sy"]].to_numpy(), g[["ex", "ey"]].to_numpy(),
-                       px_nm[iid], value_nm=g["value_nm"].to_numpy(),
-                       params=params)
+        S = g[["sx", "sy"]].to_numpy()
+        E = g[["ex", "ey"]].to_numpy()
+        f = extract_l3(images[iid], S, E, px_nm[iid],
+                       value_nm=g["value_nm"].to_numpy(), params=params)
+        # 마스크 정합 피쳐 — extract_l3와 행 순서가 같아 index로 join
+        fm = extract_mask_l3(masks[(iid, cat)], images[iid], S, E,
+                             px_nm[iid], params=params)
+        f = pd.concat([f, fm], axis=1)
         for c in _TRUTH_COLS:
             f[c] = g[c].to_numpy()
         parts.append(f)
+        lm_rows.append({"image_id": iid, "category_id": cat,
+                        **extract_mask_image(masks[(iid, cat)], images[iid],
+                                             params)})
     l3 = pd.concat(parts, ignore_index=True)
 
     img_truth = (records.groupby("image_id", sort=False)
@@ -120,7 +147,8 @@ def build_frames(records: pd.DataFrame, images: dict[str, np.ndarray],
     l1 = pd.DataFrame([{"image_id": iid, **extract_l1(img, params)}
                        for iid, img in images.items()]).merge(
         img_truth, on="image_id")
-    return l3, l2, l1
+    lm = pd.DataFrame(lm_rows).merge(img_truth, on="image_id")
+    return l3, l2, l1, lm
 
 
 def _z_per_category(df: pd.DataFrame, base: pd.DataFrame,
@@ -137,12 +165,13 @@ def run_selftest(sp: SynthParams | None = None,
                  params: Params | None = None) -> tuple[str, bool]:
     sp = sp or SynthParams()
     params = params or Params()
-    records, images = generate_dataset(sp)
-    l3, l2, l1 = build_frames(records, images, params)
+    records, images, masks = generate_dataset(sp)
+    l3, l2, l1, lm = build_frames(records, images, masks, params)
 
     base3 = l3[l3["injected_failure"] == "none"]
     z3 = _z_per_category(l3, base3, params)
     z2 = _z_per_category(l2, l2[l2["injected_failure"] == "none"], params)
+    zm = _z_per_category(lm, lm[lm["injected_failure"] == "none"], params)
 
     base1 = l1[l1["injected_failure"] == "none"]
     hists = np.stack([np.asarray(h) for h in base1["hist"]])
@@ -153,7 +182,7 @@ def run_selftest(sp: SynthParams | None = None,
     z1 = apply_z(l1, cohort_stats(l1[l1["injected_failure"] == "none"],
                                   params=params), params)
 
-    frames = {"l3": z3, "l2": z2, "l1": z1}
+    frames = {"l3": z3, "l2": z2, "l1": z1, "lm": zm}
     t_soft = threshold_from_quantile(
         top_feature(z3[z3["injected_failure"] == "none"])["top_z"], 0.90)
 

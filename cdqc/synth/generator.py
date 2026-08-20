@@ -46,6 +46,9 @@ def _default_inject() -> dict:
         "plateau_defect": [False, True],
         "saturation": [1.0, 2.0, 4.0],
         "partial_damage": [0, 0.25],
+        "mask_shift_px": [0, 2, 4],              # 마스크만 평행이동 (이미지 정상)
+        "mask_ragged_p": [0, 0.15, 0.3],         # 경계 픽셀 플립 확률
+        "rotated_frame_deg": [0, 10, 20],        # 시퀀스 전체 회전 배치 + CD 수 변경
     }
 
 
@@ -184,19 +187,55 @@ def truth_records(scene: Scene, sp: SynthParams) -> list[dict]:
     return rows
 
 
+def truth_mask(scene: Scene, band_idx: int) -> np.ndarray:
+    """밴드 정의에서 직접 만든 참 이진 마스크 (카테고리 하나 분량)."""
+    y = np.arange(scene.H, dtype=np.float64)
+    X = np.arange(scene.W, dtype=np.float64)[None, :]
+    band = scene.bands[band_idx]
+    xl = band.x_left(y, scene.H)[:, None]
+    xr = band.x_right(y, scene.H)[:, None]
+    return (X >= xl) & (X <= xr)
+
+
+def _apply_mask_mods(mask: np.ndarray, mods: inject.ImageMods,
+                     rng: np.random.Generator) -> np.ndarray:
+    m = mask.copy()
+    d = int(round(mods.mask_shift_px))
+    if d > 0:                                   # +x 평행이동 (이미지는 정상)
+        shifted = np.zeros_like(m)
+        shifted[:, d:] = m[:, :-d]
+        m = shifted
+    if mods.mask_ragged_p > 0:
+        from scipy.ndimage import binary_dilation
+        from ..features.mask import boundary_pixels
+        p = mods.mask_ragged_p
+        # 1) 경계 안쪽 1px 플립 → 경계 거칠기 (notch — 성분 수엔 영향 없음)
+        inner = boundary_pixels(m)
+        m = m ^ (inner & (rng.random(m.shape) < p))
+        # 2) 바깥 거리-4 링에 저밀도 고립 잡티 → 성분 수. 링이 마스크에서
+        #    떨어져 있어 병합이 없고, q<1/9 영역이라 개수가 p에 단조 증가
+        d4 = binary_dilation(mask, iterations=4)
+        d3 = binary_dilation(mask, iterations=3)
+        ring = d4 & ~d3
+        m = m | (ring & (rng.random(m.shape) < p / 3.0))
+    return m
+
+
 def generate_dataset(sp: SynthParams | None = None
-                     ) -> tuple[pd.DataFrame, dict[str, np.ndarray]]:
+                     ) -> tuple[pd.DataFrame, dict[str, np.ndarray], dict]:
     """전체 케이스(베이스라인 + 실패×강도) 생성 — 메모리 내.
 
-    반환: (records, images)
+    반환: (records, images, masks)
     - records: 행=CD. 컬럼 image_id, category_id, cd_index, sx..ey, value,
       unit + truth(injected_failure, injected_strength, sev_rank, affected)
     - images: {image_id: np.ndarray[uint8]}
+    - masks: {(image_id, category_id): bool ndarray} — DL 마스크 대역
     """
     sp = sp or SynthParams()
     cases = inject.build_cases(sp)
     all_rows: list[dict] = []
     images: dict[str, np.ndarray] = {}
+    masks: dict[tuple[str, str], np.ndarray] = {}
     for ci, case in enumerate(cases):
         for ii in range(case.n_images):
             rng = np.random.default_rng([sp.seed, ci, ii])
@@ -212,6 +251,10 @@ def generate_dataset(sp: SynthParams | None = None
                         if r0 <= my < r1 and c0 <= mx < c1:
                             r["affected"] = 1
             images[image_id] = img
+            for k in range(sp.n_categories):
+                cat = chr(ord("A") + k)
+                masks[(image_id, cat)] = _apply_mask_mods(
+                    truth_mask(scene, k), mods, rng)
             for r in rec_rows:
                 r.pop("band", None)
                 r.update({"recipe_id": RECIPE_ID, "image_id": image_id,
@@ -224,14 +267,19 @@ def generate_dataset(sp: SynthParams | None = None
             "sx", "sy", "ex", "ey", "value", "unit",
             "injected_failure", "injected_strength", "sev_rank", "affected"]
     records = pd.DataFrame(all_rows)[cols]
-    return records, images
+    return records, images, masks
 
 
 def save_dataset(records: pd.DataFrame, images: dict[str, np.ndarray],
-                 out_dir: str | Path) -> None:
+                 out_dir: str | Path, masks: dict | None = None) -> None:
     """눈 확인용 저장 (PNG + CSV). 검증 경로에는 불필요."""
     out = Path(out_dir)
     (out / "images").mkdir(parents=True, exist_ok=True)
     for image_id, img in images.items():
         cv2.imwrite(str(out / "images" / f"{image_id}.png"), img)
+    if masks:
+        (out / "masks").mkdir(parents=True, exist_ok=True)
+        for (image_id, cat), m in masks.items():
+            cv2.imwrite(str(out / "masks" / f"{image_id}_{cat}.png"),
+                        m.astype(np.uint8) * 255)
     records.to_csv(out / "records.csv", index=False)

@@ -28,7 +28,12 @@ FAILURE_KEYS = {
     "plateau_defect": "plateau_defect",
     "saturation": "saturation",
     "partial_damage": "partial_damage",
+    "mask_shift_px": "mask_shift",
+    "mask_ragged_p": "mask_ragged",
+    "rotated_frame_deg": "rotated_frame",
 }
+
+ROTATED_FRAME_CD_DROP = 4   # rotated_frame에서 카테고리당 줄이는 CD 수
 
 _TILE_GRID = 4  # features/l1.py의 타일 분할과 일치
 
@@ -51,6 +56,8 @@ class ImageMods:
     sat_mult: float = 1.0
     plateau_blobs: list[tuple[float, float, float]] = field(default_factory=list)
     damage_tiles: list[tuple[int, int, int, int]] = field(default_factory=list)
+    mask_shift_px: float = 0.0      # 마스크만 이동 (이미지·좌표는 정상)
+    mask_ragged_p: float = 0.0      # 마스크 경계 픽셀 플립 확률
 
 
 def build_cases(sp) -> list[Case]:
@@ -165,6 +172,35 @@ def apply_case(case: Case, scene, rows: list[dict], sp,
                 rows[i]["affected"] = 1
     elif f == "saturation":
         mods.sat_mult = float(v)
+        for r in rows:
+            r["affected"] = 1
+    elif f == "mask_shift":
+        mods.mask_shift_px = float(v)
+        for r in rows:
+            r["affected"] = 1
+    elif f == "mask_ragged":
+        mods.mask_ragged_p = float(v)
+        for r in rows:
+            r["affected"] = 1
+    elif f == "rotated_frame":
+        # 총체적 실패: 기준 각도 오설정 — 시퀀스 전체 회전 배치 + CD 수 변경.
+        # 회전된 세그먼트도 밴드 엣지 위에 놓는다 (개별 delta는 정상이어야 함)
+        theta = math.radians(float(v))
+        if float(v) > 0:
+            by_cat: dict[str, list[int]] = {}
+            for i, r in enumerate(rows):
+                by_cat.setdefault(r["category_id"], []).append(i)
+            drop = set()
+            for idxs in by_cat.values():
+                drop.update(idxs[-ROTATED_FRAME_CD_DROP:])
+            rows = [r for i, r in enumerate(rows) if i not in drop]
+            for r in rows:
+                width = r["ex"] - r["sx"]
+                new_ey = r["ey"] + math.tan(theta) * width
+                if 5 <= new_ey <= scene.H - 5:
+                    band = scene.bands[r["band"]]
+                    r["ey"] = new_ey
+                    r["ex"] = float(band.x_right(np.array([new_ey]), scene.H)[0])
         for r in rows:
             r["affected"] = 1
     elif f == "partial_damage":
