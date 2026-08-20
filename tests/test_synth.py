@@ -1,58 +1,52 @@
 import numpy as np
-import polars as pl
 import pytest
 
-from cdqc.synth.generator import generate_dataset
+from cdqc.synth.generator import SynthParams, generate_dataset
 
 
-@pytest.fixture
-def tiny_cfg(cfg):
-    return cfg.with_overrides({
-        "synthetic": {"n_images": 2, "image_size": [256, 256],
-                      "cds_per_category": 10, "n_categories": 2,
-                      "inject": {"edge_jump_nm": [0, 2],
-                                 "missing_frac": [0, 0.2]}},
-        "selftest": {"n_images_per_case": 1},
-    })
+@pytest.fixture(scope="module")
+def tiny():
+    sp = SynthParams(n_images=2, image_size=(256, 256), cds_per_category=10,
+                     n_categories=2, n_images_per_case=1,
+                     inject={"edge_jump_nm": [0, 2], "missing_frac": [0, 0.2]})
+    return sp, generate_dataset(sp)
 
 
-def test_generate_deterministic(tiny_cfg, tmp_path):
-    df1 = generate_dataset(tiny_cfg, tmp_path / "a")
-    df2 = generate_dataset(tiny_cfg, tmp_path / "b")
-    assert df1.equals(df2)
+def test_generate_deterministic(tiny):
+    sp, (rec1, imgs1) = tiny
+    rec2, imgs2 = generate_dataset(sp)
+    assert rec1.equals(rec2)
+    assert all(np.array_equal(imgs1[k], imgs2[k]) for k in imgs1)
 
 
-def test_edge_jump_moves_only_affected_sx(tiny_cfg, tmp_path):
-    df = generate_dataset(tiny_cfg, tmp_path / "s")
-    base = df.filter(pl.col("injected_failure") == "edge_jump",
-                     pl.col("sev_rank") == 0)
-    jump = df.filter(pl.col("injected_failure") == "edge_jump",
-                     pl.col("sev_rank") == 1)
-    aff = jump.filter(pl.col("affected") == 1)
-    assert aff.height > 0
-    # 2nm / 0.5nmpx = 4px 이동 (지터 ±0.2px)
-    j = aff.join(base.filter(pl.col("affected") == 1),
-                 on=["category_id", "cd_index"], suffix="_b")
-    if j.height:
+def test_edge_jump_moves_only_affected_sx(tiny):
+    _, (df, _) = tiny
+    base = df[(df.injected_failure == "edge_jump") & (df.sev_rank == 0)]
+    jump = df[(df.injected_failure == "edge_jump") & (df.sev_rank == 1)]
+    aff = jump[jump.affected == 1]
+    assert len(aff) > 0
+    j = aff.merge(base[base.affected == 1], on=["category_id", "cd_index"],
+                  suffixes=("", "_b"))
+    if len(j):
         d = (j["sx"] - j["sx_b"]).to_numpy()
-        assert np.all(d > 3.0)
+        assert np.all(d > 2.5)   # 2nm / 0.5nmpx = 4px 이동 (지터 ±0.3px×2)
 
 
-def test_missing_drops_rows(tiny_cfg, tmp_path):
-    df = generate_dataset(tiny_cfg, tmp_path / "m")
-    n0 = df.filter(pl.col("injected_failure") == "missing",
-                   pl.col("sev_rank") == 0).height
-    n1 = df.filter(pl.col("injected_failure") == "missing",
-                   pl.col("sev_rank") == 1).height
+def test_missing_drops_rows(tiny):
+    _, (df, _) = tiny
+    n0 = len(df[(df.injected_failure == "missing") & (df.sev_rank == 0)])
+    n1 = len(df[(df.injected_failure == "missing") & (df.sev_rank == 1)])
     assert n1 < n0
 
 
-def test_images_written(tiny_cfg, tmp_path):
-    df = generate_dataset(tiny_cfg, tmp_path / "img")
-    import cv2
-    for p in (tmp_path / "img" / "images").glob("*.png"):
-        im = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
-        assert im is not None and im.shape == (256, 256)
-        break
-    # config 오버라이드는 병합 의미론 — inject 기본 키들도 함께 생성된다
-    assert {"none", "edge_jump", "missing"} <= set(df["injected_failure"].unique())
+def test_value_is_truth_with_mixed_units(tiny):
+    """value = 참 길이 × px_nm — 단위 Å/nm 혼합, 지터·주입과 무관하게 참값."""
+    _, (df, imgs) = tiny
+    base = df[df.injected_failure == "none"]
+    assert set(base["unit"].unique()) == {"Å", "nm"}
+    nm = np.where(base["unit"] == "Å", base["value"] / 10, base["value"])
+    cd_px = np.hypot(base["ex"] - base["sx"], base["ey"] - base["sy"])
+    # 좌표는 지터 포함, value는 참값 → 비는 0.5 근처에서 지터 폭만큼만 흔들림
+    assert np.all(np.abs(nm / cd_px - 0.5) < 0.03)
+    for img in imgs.values():
+        assert img.dtype == np.uint8 and img.shape == (256, 256)
