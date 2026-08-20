@@ -106,24 +106,3 @@ def features_of(level: str, kind: str | None = None) -> list[Feature]:
     return [f for f in REGISTRY if f.level == level and (kind is None or f.kind == kind)]
 
 
-def enabled_names(cfg, level: str) -> list[str]:
-    """config [features.enabled_*] 필터 적용된 피쳐 이름 목록.
-
-    "all"은 registry의 enabled_default=True 피쳐 전부. 명시 리스트를 주면
-    기본 비활성 피쳐(curv 등)도 켤 수 있다.
-    """
-    setting = cfg["features"][f"enabled_{level}"]
-    names = [f.name for f in features_of(level)]
-    if setting == "all":
-        return [f.name for f in features_of(level) if f.enabled_default]
-    unknown = set(setting) - set(names)
-    if unknown:
-        from ..errors import CdqcError
-        raise CdqcError("E-FEAT-01", f"enabled_{level}: {sorted(unknown)}")
-    return [n for n in names if n in setting]
-
-
-def worse_when(cfg, name: str) -> str:
-    """config [features.direction] 오버라이드 반영한 방향."""
-    override = cfg["features"]["direction"].get(name)
-    return override if override else BY_NAME[name].worse_when
