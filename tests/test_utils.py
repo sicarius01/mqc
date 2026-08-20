@@ -73,12 +73,30 @@ def test_ratio_cv_detects_inconsistency():
     assert cdqc.ratio_cv(S, E, bad) > 0.01
 
 
+def test_to_uint8_passthrough_and_conversions():
+    u8 = np.arange(256, dtype=np.uint8).reshape(16, 16)
+    assert cdqc.to_uint8(u8) is u8                        # 복사 없음
+
+    u16 = (np.arange(256, dtype=np.uint16) * 257).reshape(16, 16)
+    shifted = cdqc.to_uint8(u16, method="shift")
+    assert shifted.dtype == np.uint8
+    assert shifted[0, 1] == 1 and shifted[-1, -1] == 255  # 상위 8비트
+
+    f = np.linspace(100.0, 900.0, 256).reshape(16, 16)
+    st = cdqc.to_uint8(f)                                 # percentile 스트레치
+    assert st.dtype == np.uint8
+    assert st.min() == 0 and st.max() == 255
+
+    with pytest.raises(cdqc.CdqcError):
+        cdqc.to_uint8(u8.astype(np.float64), method="shift")
+
+
 def test_convention_scores_picks_truth(params):
     """합성 이미지 + 참 좌표 → xy/zero/no-flip이 1등이어야 한다."""
     from cdqc.synth.generator import SynthParams, generate_dataset
     sp = SynthParams(n_images=3, image_size=(256, 256), cds_per_category=8,
                      n_categories=2, n_images_per_case=0, inject={})
-    records, images = generate_dataset(sp)
+    records, images, _ = generate_dataset(sp)
     items = []
     for iid, g in records.groupby("image_id"):
         items.append((images[iid], g[["sx", "sy"]].to_numpy(),

@@ -109,3 +109,66 @@ def test_extract_l2_groups(params):
     assert l2.iloc[0]["traj_rms_s"] == pytest.approx(0.2)
     one = cdqc.extract_l2(l3, None, params)          # 전체 = 한 시퀀스
     assert one.iloc[0]["n_cd"] == 7
+
+
+def test_extract_l2_wholesale_failure_columns(params):
+    """angle_median(원형)/angle_spread/pitch_median/span_nm — 변경 #03 §2."""
+    n = 5
+    l3 = pd.DataFrame({
+        "cd_nm": [30.0] * n,
+        "angle": [10.0, 12.0, 11.0, 13.0, 12.0],
+        "mid_x": np.full(n, 50.0),
+        "mid_y": 10.0 * np.arange(n, dtype=float),   # 피치 10px
+        "px_nm": [0.5] * n,
+    })
+    l2 = cdqc.extract_l2(l3, None, params)
+    r = l2.iloc[0]
+    assert r["angle_median"] == pytest.approx(12.0, abs=0.5)
+    assert r["angle_spread"] == pytest.approx(1.0, abs=0.5)
+    assert r["pitch_median"] == pytest.approx(5.0)       # 10px * 0.5nm
+    assert r["span_nm"] == pytest.approx(20.0)           # 40px * 0.5nm
+
+
+def test_extract_l3_carries_midpoints(params):
+    S = np.array([[0.0, 0.0], [0.0, 10.0]])
+    E = np.array([[10.0, 0.0], [10.0, 10.0]])
+    f = cdqc.extract_l3(None, S, E, 0.5, params=params)
+    assert f["mid_x"].tolist() == [5.0, 5.0]
+    assert f["px_nm"].iloc[0] == 0.5
+
+
+def test_recall_at_fpr_hand_computed():
+    good = np.arange(100, dtype=float)          # 0..99 → 95분위 = 94.05
+    bad = np.array([50.0, 96.0, 98.0, np.nan])
+    r = cdqc.recall_at_fpr(bad, good, fpr=0.05)
+    assert r["threshold"] == pytest.approx(94.05)
+    assert r["recall"] == pytest.approx(2 / 3)
+    assert r["fpr_actual"] == pytest.approx(0.05)
+    assert r["n_nan"] == 1 and r["n_bad"] == 3
+
+
+def test_localization():
+    assert cdqc.localization_hit([7, 3, 5], {3, 9}, k=2)
+    assert not cdqc.localization_hit([7, 3, 5], {9}, k=3)
+    rate = cdqc.localization_rate([[1], [2], [3]], [{1}, {5}, {3}], k=1)
+    assert rate == pytest.approx(2 / 3)
+
+
+def test_ablation_table(params):
+    rng = np.random.default_rng(0)
+    n = 200
+    z = pd.DataFrame({
+        "z_delta_s": rng.normal(0, 1, n),
+        "z_cnr_s": rng.normal(0, 1, n),
+    })
+    labels = np.zeros(n, dtype=bool)
+    labels[:20] = True
+    z.loc[z.index[:20], "z_delta_s"] += 6.0      # delta만 신호
+    tab = cdqc.ablation_table(z, {"delta만": ["delta_s"],
+                                  "cnr만": ["cnr_s"],
+                                  "둘 다": ["delta_s", "cnr_s"]},
+                              labels, fpr=0.05, params=params)
+    r = {row["set"]: row["recall"] for _, row in tab.iterrows()}
+    assert r["delta만"] > 0.9
+    assert r["cnr만"] < 0.3
+    assert r["둘 다"] > 0.8

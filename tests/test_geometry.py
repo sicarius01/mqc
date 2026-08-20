@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from cdqc import geometry as geo
 
@@ -73,6 +74,22 @@ def test_obliquity_detects_rotated_subset():
     ob = geo.obliquity_deg(seg, tangent)
     assert abs(ob[5] - 20.0) < 0.5
     assert np.median(np.delete(ob, 5)) < 0.5
+
+
+def test_circular_median_wraps_at_90():
+    # 단순 median이면 (89-89+88)/3 ≈ 29로 깨지는 케이스 — ±90° 랩 경계
+    m = geo.circular_median_deg180(np.array([89.0, -89.0, 88.0]))
+    dev = (m - 89.0 + 90.0) % 180.0 - 90.0      # 89°와의 랩 거리
+    assert abs(dev) < 2.0
+    spread = geo.circular_mad_deg180(np.array([89.0, -89.0, 88.0]))
+    assert spread < 2.0                          # 실제로는 서로 2° 안
+
+
+def test_circular_median_plain_case():
+    assert geo.circular_median_deg180(np.array([10.0, 12.0, 14.0])) == \
+        pytest.approx(12.0, abs=1e-6)
+    assert geo.circular_mad_deg180(np.array([10.0, 12.0, 14.0])) == \
+        pytest.approx(2.0, abs=1e-6)
 
 
 def test_theil_sen_robust_linear():

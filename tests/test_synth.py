@@ -13,14 +13,15 @@ def tiny():
 
 
 def test_generate_deterministic(tiny):
-    sp, (rec1, imgs1) = tiny
-    rec2, imgs2 = generate_dataset(sp)
+    sp, (rec1, imgs1, masks1) = tiny
+    rec2, imgs2, masks2 = generate_dataset(sp)
     assert rec1.equals(rec2)
     assert all(np.array_equal(imgs1[k], imgs2[k]) for k in imgs1)
+    assert all(np.array_equal(masks1[k], masks2[k]) for k in masks1)
 
 
 def test_edge_jump_moves_only_affected_sx(tiny):
-    _, (df, _) = tiny
+    _, (df, _, _) = tiny
     base = df[(df.injected_failure == "edge_jump") & (df.sev_rank == 0)]
     jump = df[(df.injected_failure == "edge_jump") & (df.sev_rank == 1)]
     aff = jump[jump.affected == 1]
@@ -33,15 +34,28 @@ def test_edge_jump_moves_only_affected_sx(tiny):
 
 
 def test_missing_drops_rows(tiny):
-    _, (df, _) = tiny
+    _, (df, _, _) = tiny
     n0 = len(df[(df.injected_failure == "missing") & (df.sev_rank == 0)])
     n1 = len(df[(df.injected_failure == "missing") & (df.sev_rank == 1)])
     assert n1 < n0
 
 
+def test_masks_match_bands(tiny):
+    """참 마스크가 밴드(카테고리) 정의와 일치 — 좌표가 경계 근처."""
+    _, (df, imgs, masks) = tiny
+    base = df[df.injected_failure == "none"]
+    for (iid, cat), g in base.groupby(["image_id", "category_id"]):
+        m = masks[(iid, cat)]
+        assert m.shape == imgs[iid].shape and m.dtype == bool
+        row = g.iloc[0]
+        mid = (int(round((row.sy + row.ey) / 2)),
+               int(round((row.sx + row.ex) / 2)))
+        assert m[mid]                     # 세그먼트 중점은 마스크 내부
+
+
 def test_value_is_truth_with_mixed_units(tiny):
     """value = 참 길이 × px_nm — 단위 Å/nm 혼합, 지터·주입과 무관하게 참값."""
-    _, (df, imgs) = tiny
+    _, (df, imgs, _) = tiny
     base = df[df.injected_failure == "none"]
     assert set(base["unit"].unique()) == {"Å", "nm"}
     nm = np.where(base["unit"] == "Å", base["value"] / 10, base["value"])
