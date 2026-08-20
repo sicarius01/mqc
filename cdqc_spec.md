@@ -1,8 +1,9 @@
 # cdqc — TEM CD 측정 품질 판정용 연산 라이브러리 스펙
 
-버전 0.2 · 이 문서는 합의된 설계의 단일 진실원(single source of truth)이다.
+버전 0.3 · 이 문서는 합의된 설계의 단일 진실원(single source of truth)이다.
 설계 논의가 바뀌면 이 문서를 먼저 고친다.
-(0.1 → 0.2: 프레임워크 → 순수 연산 라이브러리 재구조화. `cdqc_change_02_library_api.md` 참조)
+(0.1 → 0.2: 프레임워크 → 순수 연산 라이브러리 재구조화, `cdqc_change_02_library_api.md`.
+0.2 → 0.3: 마스크 피쳐 + 총체적 실패 축 + 평가 헬퍼 + to_uint8, 변경 지시 #03)
 
 ---
 
@@ -38,7 +39,8 @@ DL 세그멘테이션 기반 레시피가 TEM 이미지에서 뽑은 CD 측정�
 - 좌표 컨벤션이 불확실하면 `convention_scores()`로 후보 8개 `{xy/rowcol}×{origin 0/1}×{y_flip}` 점수표를 얻는다 (점수 = 보고 좌표 ↔ 축방향 그래디언트 피크 거리 중앙값 px, 낮을수록 좋음. 참고 채택 기준: 1등 ≤ 0.75px AND 2등/1등 비 ≥ 2 — 판별력은 좌표 지터에 근본 제한). **판단은 사용자.**
 - 단위 변환은 `to_nm(value, unit)` — Å 변형(U+00C5/U+212B/NFD/ASCII/이름)과 nm 계열 인식, **모르는 단위는 고유값 목록과 함께 E-ARG-03 즉시 중단 (추측 금지)**.
 - px_nm이 없으면 `infer_px_nm(S, E, value_nm)` — 이미지 하나 분량의 value/기하 비 중앙값. **한계**: 이미지 전체가 균일하게 밀린 계통 편향은 역산에 흡수된다 (탐지는 `delta_median` 몫). 행별 비 산포는 `ratio_cv()`로 점검 (>1%면 좌표와 보고값이 따로 계산됐을 가능성).
-- DL 마스크/확률맵은 없다는 전제 — 마스크 ↔ 명암 정합은 `delta`로만 측정.
+- **DL segmentation 마스크** (있는 카테고리만): **이진 ndarray** (bool 또는 uint8 0/비0), 이미지와 같은 shape. 라벨맵 → 클래스별 이진 분리(컬러/라벨 PNG 해석)는 사용자 몫. 해상도가 이미지와 다르면 `E-ARG-07` — 리사이즈도 사용자가 명시적으로.
+- 원본이 uint8이 아니면 `to_uint8(img)` (percentile 스트레치 또는 uint16 상위 8비트). **주의**: 이미지별 스트레치는 절대 밝기를 없앤다 — `dyn_range`/`sat_*` L1 피쳐는 스트레치 전 원본에서 계산 권장.
 
 ## 3. 피쳐 설계
 
@@ -86,6 +88,14 @@ DL 세그멘테이션 기반 레시피가 TEM 이미지에서 뽑은 CD 측정�
 
 국소 추세: `Params.method` = `robust_linear`(국소 Theil–Sen, **기본**) 또는 `hampel`(러닝 메디안). hampel은 기울거나 휜 궤적에 계통 잔차를 남긴다 (베이스라인 z_s_resid p90: hampel 9.8 vs robust_linear 1.6). 시퀀스가 `min_seq_len` 미만이면 잔차는 NaN.
 
+**마스크 정합 (extract_mask_l3 — 마스크가 있는 카테고리만, extract_l3와 index join)**
+
+| 피쳐 | 정의 | worse_when | reason |
+|---|---|---|---|
+| `mdist_s`, `mdist_e` | 보고 좌표에서 가장 가까운 마스크 경계까지 거리(nm). 경계 distance transform을 좌표 위치에서 bilinear 샘플 | high | POSITION_MISMATCH |
+| `mgrad_s`, `mgrad_e` | 최근접 마스크 경계점 위치의 **이미지** 그래디언트 크기 / 국소 노이즈 σ — DL 경계가 실제 명암 전이 위에 있는지 | low | POSITION_MISMATCH |
+| `minside` | 세그먼트 중점(플래토 중앙)이 마스크 내부인가 (bool) — CD가 마스크 구조를 실제로 가로지르는지 | bool | GEOMETRY_ODD |
+
 ### 3.3 L2 — 카테고리 시퀀스 피쳐 (`extract_l2`)
 
 | 피쳐 | 정의 |
@@ -94,6 +104,27 @@ DL 세그멘테이션 기반 레시피가 TEM 이미지에서 뽑은 CD 측정�
 | `cd_median`, `cd_mad` | 코호트 대비 |
 | `delta_median_s/e` | 시퀀스 전체 계통 편향. 개별 delta는 정상인데 전부 같은 방향이면 DL 편향 |
 | `traj_rms_s/e` | 궤적 잔차 RMS |
+
+**총체적 실패 축** (변경 #03 §2 — 기준 각도 오설정 류는 개별 CD z로 희석되므로 시퀀스 요약을 코호트와 비교):
+
+| 피쳐 | 정의 | worse_when | 잡는 것 |
+|---|---|---|---|
+| `angle_median` | 세그먼트 각도의 **원형 중앙값** (deg, 180° 주기 — `atan2(median sin2θ, median cos2θ)/2`. 단순 median은 ±90° 경계에서 깨짐. 코호트가 랩 경계 근처 레시피면 주의) | both | 기준 각도 오설정 — 시퀀스 전체 회전 |
+| `angle_spread` | 각도의 원형 MAD (deg) | high | 방향이 뒤죽박죽인 시퀀스 |
+| `pitch_median` | 이웃 CD 중점 간 거리 중앙값 (nm) | both | 측정 간격 설정 오류 |
+| `span_nm` | 첫/끝 CD 중점 간 거리 (nm) | both | ROI 길이가 다름 |
+
+(`n_cd`가 이 류의 1차 신호. pitch/span은 extract_l3가 실어주는 캐리어 컬럼 mid_x/mid_y/px_nm에서 계산.)
+
+**LM — 마스크 이미지 레벨 (extract_mask_image)**: 마스크는 보통 (이미지 × 클래스)당 하나라 **L1과 코호트 축이 다를 수 있다** — 코호트 분리는 사용자 몫 (cohort_stats/apply_z는 이름 기반이라 코드 차이 없음).
+
+| 피쳐 | 정의 | worse_when |
+|---|---|---|
+| `mask_grad_agree` | 마스크 경계 픽셀 전체의 이미지 그래디언트 중앙값 / 노이즈 σ — **DL이 헛것을 그렸는지의 단일 지표** | low |
+| `mask_n_components` | 연결 성분 수 (8-이웃) | both |
+| `mask_hole_frac` | 성분 내부 구멍 픽셀 비율 | high |
+| `mask_boundary_rough` | 경계 둘레 / 등면적 원 둘레 (**16px 이상** 성분별 중앙값 — 잡티가 중앙값을 지배하지 않게. 잡티는 n_components 몫) | high |
+| `mask_area_frac` | 마스크 픽셀 비율 | both |
 
 플래그 의존 값은 사용자가 플래그를 정한 뒤 헬퍼로 직접 계산한다:
 `impact_nm(cd_nm, flags)` = |stat(전체) − stat(플래그 제외)| — **물리 단위(nm)라 스펙 공차와 직접 비교**. `max_run(flags)` = 연속 플래그 최대 길이 (뭉침=국소 이미지 손상 vs 산발=락온 실패 구분).
@@ -151,7 +182,7 @@ config 파일 없음. 필드: 샘플링(ribbon_half_w=2, win_frac=0.4, win_min/m
 
 ## 6. 공개 API
 
-`import cdqc` 로 전부 접근. §3–4의 함수들 + 유틸(`to_nm`, `normalize_unit`, `infer_px_nm`, `ratio_cv`, `transform_coords`, `convention_scores`) + 메타(`FEATURES` registry, `Params`, `CdqcError`). 시그니처와 사용 예제는 README.md가 기준.
+`import cdqc` 로 전부 접근. §3–4의 함수들(`extract_l1/l2/l3`, `extract_mask_l3`, `extract_mask_image`, `cohort_stats`, `apply_z`, 판정 헬퍼) + **평가 헬퍼**(`recall_at_fpr`, `localization_hit/rate`, `ablation_table` — 라벨은 사용자가 만들고 cdqc는 연산만) + 유틸(`to_nm`, `normalize_unit`, `infer_px_nm`, `ratio_cv`, `to_uint8`, `transform_coords`, `convention_scores`) + 메타(`FEATURES` registry, `Params`, `CdqcError`). 시그니처와 사용 예제는 README.md가 기준.
 
 ## 7. 합성 데이터 생성기 + selftest (개발 전용)
 
@@ -181,6 +212,9 @@ img = background(gradient) + Σ bands(erf edge profile, contrast, position)
 | `plateau_defect` | S–E 사이 블롭 | `plateau_cv` | `delta` |
 | `saturation` | 대비 스트레치 → 클립 | L1 `sat_lo` | — |
 | `partial_damage` | 일부 타일 노이즈/블러 | L1 `tile_energy_cv` | 다른 타일 CD의 `delta` |
+| `mask_shift` | 마스크만 d px 평행이동 (이미지·좌표 정상) | `mdist_*`, `mgrad_*`(경계가 플래토 위로), LM `mask_grad_agree` | `cnr_s`, `delta_s` |
+| `mask_ragged` | 경계 안쪽 1px 플립(거칠기) + 바깥 거리-4 링 저밀도 잡티(성분 수 — 병합 없이 단조 증가하도록 분리 배치) | LM `mask_boundary_rough`, `mask_n_components` | `mdist_s` (중앙값 기준) |
+| `rotated_frame` | 시퀀스 전체 θ 회전 배치 + CD 수 감소 (회전 세그먼트도 엣지 위) — 총체적 실패 | L2 `angle_median`, `n_cd` | 개별 `delta_s` |
 
 ### 7.3 selftest (`python -m cdqc.selftest`)
 
@@ -205,6 +239,7 @@ cdqc/
   features/
     l3.py                # 시퀀스 피쳐 조립 (순수 함수)
     l1.py                # 이미지 피쳐
+    mask.py              # 마스크 정합(CD 레벨) + 마스크 형태(lm 레벨)
     registry.py          # 피쳐 이름/worse_when/사유코드/설명 — 단일 목록
   synth/                 # 개발 전용: generator.py(SynthParams, 메모리 내), inject.py
   selftest.py            # 개발 전용: python -m cdqc.selftest
@@ -230,7 +265,7 @@ README.md                # 사용 예제 (API 기준 문서)
 
 ## 10. 미결 사항 (알게 되면 이 문서 갱신)
 
-- DL 마스크/확률맵 접근: 담당자 회신 대기. 가능해지면 evidence에 마스크 경로 추가 검토 (현재는 없음 전제).
+- ~~DL 마스크/확률맵 접근~~ → **해결 (변경 #03)**: segmentation PNG 확보, 마스크 피쳐 추가됨. 확률맵(soft mask)은 여전히 미확보 — 생기면 mgrad를 확률 가중으로 확장 검토.
 - 카테고리별 공차(tolerance): 사용자가 스펙에서 가져와 impact와 비교. auto 없음.
 - 레시피 최종 통계량 median/mean 여부: `impact_nm(stat=...)` 인자로 대응. 확인 필요.
 - `local_window` 기본 9가 실데이터 시퀀스 길이 대비 적정한지: 결측률 보고 판단 (5~7 후보).
