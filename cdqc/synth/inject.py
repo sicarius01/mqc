@@ -1,4 +1,4 @@
-"""실패 모드 주입 — 독립적으로 강도 조절 가능 (spec §7.2).
+"""실패 모드 주입 — 독립적으로 강도 조절 가능 (spec §7.2). 개발 전용.
 
 이미지 주입은 ImageMods로 렌더러에 전달하고, 레코드 주입(좌표 이동/삭제)은
 여기서 직접 행을 고친다. 각 케이스는 (failure, strength, sev_rank)로 식별되고
@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-# config [synthetic.inject] 키 → 실패 이름
+# SynthParams.inject 키 → 실패 이름
 FAILURE_KEYS = {
     "defocus": "defocus",
     "low_contrast": "low_contrast",
@@ -53,17 +53,14 @@ class ImageMods:
     damage_tiles: list[tuple[int, int, int, int]] = field(default_factory=list)
 
 
-def build_cases(cfg) -> list[Case]:
-    syn = cfg["synthetic"]
-    npc = int(cfg["selftest"]["n_images_per_case"])
-    cases = [Case("none", 0, 0, int(syn["n_images"]))]
-    for key, strengths in syn["inject"].items():
+def build_cases(sp) -> list[Case]:
+    cases = [Case("none", 0, 0, sp.n_images)]
+    for key, strengths in sp.inject.items():
         failure = FAILURE_KEYS.get(key)
         if failure is None:
-            from ..errors import CdqcError
-            raise CdqcError("E-SYN-01", f"unknown inject key: {key}")
+            raise ValueError(f"unknown inject key: {key}")
         for rank, s in enumerate(strengths):
-            cases.append(Case(failure, s, rank, npc))
+            cases.append(Case(failure, s, rank, sp.n_images_per_case))
     return cases
 
 
@@ -92,7 +89,7 @@ def _pick_per_category(rows: list[dict], k_per_cat: int,
     return picked
 
 
-def apply_case(case: Case, scene, rows: list[dict], cfg,
+def apply_case(case: Case, scene, rows: list[dict], sp,
                rng: np.random.Generator) -> tuple[ImageMods, list[dict]]:
     """케이스 하나를 (이미지 mods, 수정된 레코드 행들)로 변환."""
     mods = ImageMods()
@@ -182,14 +179,12 @@ def apply_case(case: Case, scene, rows: list[dict], cfg,
                 mods.damage_tiles.append((r * th, (r + 1) * th, c * tw, (c + 1) * tw))
         # affected는 렌더 후 generator가 타일 포함 여부로 표시
     else:
-        from ..errors import CdqcError
-        raise CdqcError("E-SYN-01", f"unknown failure: {f}")
+        raise ValueError(f"unknown failure: {f}")
 
-    # 정상 레시피 출력 지터 (주입 후, 모든 좌표에)
-    jitter = float(cfg["synthetic"]["coord_jitter_px"])
+    # 정상 레시피 출력 지터 (주입 후, 모든 좌표에). value는 참값 유지
     for r in rows:
-        r["sx"] += rng.normal(0, jitter)
-        r["sy"] += rng.normal(0, jitter)
-        r["ex"] += rng.normal(0, jitter)
-        r["ey"] += rng.normal(0, jitter)
+        r["sx"] += rng.normal(0, sp.coord_jitter_px)
+        r["sy"] += rng.normal(0, sp.coord_jitter_px)
+        r["ex"] += rng.normal(0, sp.coord_jitter_px)
+        r["ey"] += rng.normal(0, sp.coord_jitter_px)
     return mods, rows

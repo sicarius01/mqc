@@ -1,4 +1,8 @@
-"""합성 TEM 이미지/측정 생성기 — 자가검증의 핵심 자산 (spec §7).
+"""합성 TEM 이미지/측정 생성기 — 개발(사외) 검증 전용 자산 (spec §7).
+
+라이브러리 사용자(사내)와 무관하다. 파일 I/O 없이 메모리 내에서
+(records DataFrame, {image_id: 이미지}) 를 만들어 selftest/pytest가 쓴다.
+눈 확인용 저장은 save_dataset() 옵션.
 
 이미지 모델:
     img = background(gradient) + Σ bands(erf edge profile) + fringe(옵션)
@@ -6,10 +10,11 @@
 
 - 밴드(층) k의 좌/우 경계가 엣지. 카테고리 k = 그 밴드의 (좌, 우) 엣지 쌍.
 - Ground truth 좌표는 내부 컨벤션 (x=col, y=row, zero-origin).
-- "레시피 출력" = 참 좌표 + 소량 지터. 실패는 inject.py가 주입.
+- "레시피 출력" = 참 좌표 + 지터. 실패는 inject.py가 주입.
+- value = **참 길이 × px_nm** (주입 후에도 유지 → value_mismatch 경로 검증),
+  단위는 행마다 Å/nm 교대 (행별 단위 변환 경로 검증).
 
-합성 PASS는 "기계적으로 맞다"이지 실제 TEM 실패를 잡는다는 증명이 아니다
-(spec §1). 유효성은 실데이터 라벨로만 증명한다.
+합성 PASS는 "기계적으로 맞다"이지 실제 TEM 실패를 잡는다는 증명이 아니다.
 """
 
 from __future__ import annotations
@@ -19,14 +24,47 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-import polars as pl
+import pandas as pd
 from scipy.special import erf
 
-from ..config import Config
 from . import inject
 
 RECIPE_ID = "synthR"
 SQRT2 = np.sqrt(2.0)
+
+
+def _default_inject() -> dict:
+    return {
+        "defocus": [0, 1, 2, 4],                 # rise 배수 (0 = 주입 없음)
+        "low_contrast": [1.0, 0.5, 0.25],
+        "noise_up": [1.0, 2.0, 4.0],
+        "edge_jump_nm": [0, 1, 2, 5],            # 최대값은 탐색 창(W/2) 안
+        "systematic_bias_nm": [0, 1, 3],
+        "oblique_deg": [0, 10, 20],
+        "missing_frac": [0, 0.1, 0.3],
+        "double_edge_offset_px": [0, 4, 8],
+        "plateau_defect": [False, True],
+        "saturation": [1.0, 2.0, 4.0],
+        "partial_damage": [0, 0.25],
+    }
+
+
+@dataclass
+class SynthParams:
+    """합성 생성 파라미터 (개발 전용 — 구 config [synthetic]+[selftest] 일부)."""
+    n_images: int = 30                 # 베이스라인(정상) 이미지 수
+    image_size: tuple[int, int] = (512, 512)
+    n_categories: int = 3
+    cds_per_category: int = 20
+    px_nm: float = 0.5
+    base_contrast: float = 60.0
+    noise_sigma: float = 6.0
+    edge_rise_px: float = 1.5
+    coord_jitter_px: float = 0.3       # 정상 레시피 출력 지터 (DL 컨투어 현실치)
+    fringe: bool = False
+    n_images_per_case: int = 4         # (실패, 강도) 조합당 이미지 수
+    seed: int = 42
+    inject: dict = field(default_factory=_default_inject)
 
 
 @dataclass
@@ -61,15 +99,12 @@ class Scene:
     bands: list[Band] = field(default_factory=list)
 
 
-def make_scene(cfg: Config, rng: np.random.Generator) -> Scene:
-    syn = cfg["synthetic"]
-    H, W = int(syn["image_size"][0]), int(syn["image_size"][1])
-    n = int(syn["n_categories"])
-    scene = Scene(H=H, W=W, px_nm=float(syn["px_nm"]),
-                  contrast=float(syn["base_contrast"]),
-                  rise=float(syn["edge_rise_px"]),
-                  noise_sigma=float(syn["noise_sigma"]),
-                  fringe=bool(syn["fringe"]))
+def make_scene(sp: SynthParams, rng: np.random.Generator) -> Scene:
+    H, W = int(sp.image_size[0]), int(sp.image_size[1])
+    n = sp.n_categories
+    scene = Scene(H=H, W=W, px_nm=sp.px_nm, contrast=sp.base_contrast,
+                  rise=sp.edge_rise_px, noise_sigma=sp.noise_sigma,
+                  fringe=sp.fringe)
     centers = np.linspace(W / (n + 1), W * n / (n + 1), n)
     for cx in centers:
         base_tilt = rng.uniform(-0.03, 0.03)
@@ -128,15 +163,9 @@ def render(scene: Scene, mods: inject.ImageMods, rng: np.random.Generator) -> np
     return np.clip(img, 0, 255).astype(np.uint8)
 
 
-def truth_records(scene: Scene, cfg: Config) -> list[dict]:
-    """카테고리별 참 (sx, sy, ex, ey) + 보고 측정값(value, 단위 혼합).
-
-    value는 **참 길이 × px_nm** — 이후 inject가 좌표를 바꿔도 value는 그대로
-    둔다 (좌표·값 불일치를 value_mismatch_nm이 잡는 경로가 selftest에서
-    실행되게). 단위는 행마다 "Å"/"nm"을 번갈아 써서 행별 변환 경로를 통과.
-    """
-    syn = cfg["synthetic"]
-    n_cd = int(syn["cds_per_category"])
+def truth_records(scene: Scene, sp: SynthParams) -> list[dict]:
+    """카테고리별 참 (sx, sy, ex, ey) + 보고 측정값(value, 단위 혼합)."""
+    n_cd = sp.cds_per_category
     ys = np.linspace(40, scene.H - 40, n_cd)
     rows = []
     for k, band in enumerate(scene.bands):
@@ -155,52 +184,54 @@ def truth_records(scene: Scene, cfg: Config) -> list[dict]:
     return rows
 
 
-def generate_dataset(cfg: Config, out_root: Path) -> pl.DataFrame:
-    """전체 케이스(베이스라인 + 실패×강도)의 이미지와 레코드를 생성.
+def generate_dataset(sp: SynthParams | None = None
+                     ) -> tuple[pd.DataFrame, dict[str, np.ndarray]]:
+    """전체 케이스(베이스라인 + 실패×강도) 생성 — 메모리 내.
 
-    out_root/images/*.png 와 out_root/records.csv 를 쓴다.
-    레코드에는 truth 컬럼(injected_failure, injected_strength, sev_rank,
-    affected)이 포함된다 — selftest가 조인해서 쓴다.
+    반환: (records, images)
+    - records: 행=CD. 컬럼 image_id, category_id, cd_index, sx..ey, value,
+      unit + truth(injected_failure, injected_strength, sev_rank, affected)
+    - images: {image_id: np.ndarray[uint8]}
     """
-    img_dir = out_root / "images"
-    img_dir.mkdir(parents=True, exist_ok=True)
-    seed = cfg.seed()
-    cases = inject.build_cases(cfg)
-
+    sp = sp or SynthParams()
+    cases = inject.build_cases(sp)
     all_rows: list[dict] = []
+    images: dict[str, np.ndarray] = {}
     for ci, case in enumerate(cases):
         for ii in range(case.n_images):
-            rng = np.random.default_rng([seed, ci, ii])
-            scene = make_scene(cfg, rng)
+            rng = np.random.default_rng([sp.seed, ci, ii])
+            scene = make_scene(sp, rng)
             image_id = f"{case.failure}_{case.sev_rank}_{ii:02d}"
-            mods, rec_rows = inject.apply_case(case, scene, truth_records(scene, cfg),
-                                               cfg, rng)
+            mods, rec_rows = inject.apply_case(case, scene,
+                                               truth_records(scene, sp), sp, rng)
             img = render(scene, mods, rng)
-            # 부분 손상 타일 안의 CD 표시 (렌더 후 확정되는 유일한 affected)
             if mods.damage_tiles:
                 for r in rec_rows:
                     mx, my = (r["sx"] + r["ex"]) / 2, (r["sy"] + r["ey"]) / 2
                     for (r0, r1, c0, c1) in mods.damage_tiles:
                         if r0 <= my < r1 and c0 <= mx < c1:
                             r["affected"] = 1
-            cv2.imwrite(str(img_dir / f"{image_id}.png"), img)
+            images[image_id] = img
             for r in rec_rows:
                 r.pop("band", None)
-                r.update({
-                    "recipe_id": RECIPE_ID,
-                    "image_id": image_id,
-                    "image_path": f"images/{image_id}.png",
-                    "injected_failure": case.failure,
-                    "injected_strength": str(case.strength),
-                    "sev_rank": case.sev_rank,
-                })
+                r.update({"recipe_id": RECIPE_ID, "image_id": image_id,
+                          "injected_failure": case.failure,
+                          "injected_strength": str(case.strength),
+                          "sev_rank": case.sev_rank})
                 all_rows.append(r)
 
-    df = pl.DataFrame(all_rows)
-    std = ["recipe_id", "image_id", "image_path", "category_id", "cd_index",
-           "sx", "sy", "ex", "ey", "value", "unit",
-           "injected_failure", "injected_strength", "sev_rank", "affected"]
-    df = df.select(std).sort(["injected_failure", "sev_rank", "image_id",
-                              "category_id", "cd_index"])
-    df.write_csv(out_root / "records.csv")
-    return df
+    cols = ["recipe_id", "image_id", "category_id", "cd_index",
+            "sx", "sy", "ex", "ey", "value", "unit",
+            "injected_failure", "injected_strength", "sev_rank", "affected"]
+    records = pd.DataFrame(all_rows)[cols]
+    return records, images
+
+
+def save_dataset(records: pd.DataFrame, images: dict[str, np.ndarray],
+                 out_dir: str | Path) -> None:
+    """눈 확인용 저장 (PNG + CSV). 검증 경로에는 불필요."""
+    out = Path(out_dir)
+    (out / "images").mkdir(parents=True, exist_ok=True)
+    for image_id, img in images.items():
+        cv2.imwrite(str(out / "images" / f"{image_id}.png"), img)
+    records.to_csv(out / "records.csv", index=False)

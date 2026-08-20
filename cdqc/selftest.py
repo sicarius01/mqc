@@ -1,25 +1,34 @@
-"""cdqc selftest — 합성 데이터에 전 파이프라인을 돌려 감도/특이도 검증.
+"""cdqc selftest — 합성 데이터로 감도/특이도 검증 (개발 전용, 사내 사용과 무관).
+
+**공개 API만 사용**해서 전 파이프라인을 조립한다 — 사내 사용자가 짤 코드와
+같은 모양이므로 API 자체의 dogfooding이기도 하다. 실행:
+
+    python -m cdqc.selftest
 
 각 (실패, 강도) 조합에서 피쳐의 코호트 directed z를 재서:
-- "반응해야 할" 칸: 강도에 따라 단조 증가(슬랙 허용) + 최종 강도 z ≥ z_pass
-- "반응하면 안 되는" 칸: 전 강도에서 |z| < z_specificity
-기대 표는 spec §7.2. 전부 PASS면 exit 0.
+- "반응해야 할" 칸: 강도에 따라 단조 증가(슬랙 허용) + 최종 강도 z ≥ Z_PASS
+- "반응하면 안 되는" 칸: 전 강도에서 |z| < Z_SPEC — **계통 편향 기준**
+  (worse_when="both"의 directed z는 산포만 커져도 오르므로 부호 z(zs_)로 잰다)
+전부 PASS면 exit 0.
 
-캘리브레이션은 베이스라인(injected_failure=="none")으로만 하고, 주입 케이스를
+캘리브레이션은 베이스라인(injected_failure=="none")으로만 하고 주입 케이스를
 그 기준으로 채점한다 — 케이스 자체 코호트로 정규화하면 주입이 흡수된다.
 """
 
 from __future__ import annotations
 
 import numpy as np
-import polars as pl
+import pandas as pd
 
-from . import io
-from .calibrate import calibrate_frames
-from .config import Config
-from .pipeline import add_hist_emd, extract_features
-from .scoring import add_l2_runtime, score_l3
-from .synth.generator import generate_dataset
+from .api import (apply_z, cohort_stats, extract_l1, extract_l2, extract_l3,
+                  hist_emd, threshold_from_quantile, top_feature)
+from .params import Params
+from .synth.generator import SynthParams, generate_dataset
+from .utils import infer_px_nm, to_nm
+
+Z_PASS = 3.0        # "반응해야 할" 피쳐의 최종 강도 z 하한
+Z_SPEC = 1.5        # "반응하면 안 되는" 피쳐의 |z| 상한
+MONO_SLACK = 0.5    # 단조 증가 판정 허용 슬랙 (z 단위)
 
 # (feature, level, scope). scope: affected | all | unaffected (L3에만 의미)
 EXPECTATIONS: dict[str, dict[str, list[tuple[str, str, str]]]] = {
@@ -47,9 +56,8 @@ EXPECTATIONS: dict[str, dict[str, list[tuple[str, str, str]]]] = {
         "respond": [("delta_median_s", "l2", "all")],
         "silent": [("s_resid", "l3", "affected"), ("dstep_s", "l3", "affected")],
     },
-    # cd_nm(코호트 대비)은 코호트 자체의 CD 산포(공정 변동)가 1/cosθ 과대와
-    # 같은 크기면 원리적으로 못 잡는다 — 시퀀스 내 이웃 대비인 cd_resid가
-    # 올바른 검출 경로 (이미지 간 폭 산포에 면역)
+    # cd_nm(코호트 대비)은 코호트 CD 산포(공정 변동)가 1/cosθ 과대와 같은
+    # 크기면 원리적으로 못 잡는다 — 이웃 대비인 cd_resid가 올바른 검출 경로
     "oblique": {
         "respond": [("obliquity", "l3", "affected"), ("cd_resid", "l3", "affected")],
         "silent": [("delta_s", "l3", "affected"), ("cnr_s", "l3", "affected")],
@@ -77,119 +85,126 @@ EXPECTATIONS: dict[str, dict[str, list[tuple[str, str, str]]]] = {
     },
 }
 
-SANDBOX_OVERRIDES = {
-    "paths": {"data_dir": "data/synth", "image_dir": "data/synth",
-              "cache_dir": "out/selftest/cache"},
-    "data": {"coords": {"convention": "xy"},
-             "columns": {"unit": "unit"}},   # 합성 records는 단위 컬럼 포함
-    "cohort": {"min_cohort_n": 20},   # 합성 L2 코호트(케이스당 수십 시퀀스)에 맞춤
-}
+_TRUTH_COLS = ("image_id", "category_id", "cd_index",
+               "injected_failure", "sev_rank", "affected")
 
 
-def sandbox_cfg(cfg: Config) -> Config:
-    return cfg.with_overrides(SANDBOX_OVERRIDES)
+def build_frames(records: pd.DataFrame, images: dict[str, np.ndarray],
+                 params: Params) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """공개 API로 L3/L2/L1 프레임 조립 — 사내 사용자 코드와 같은 모양."""
+    records = records.copy()
+    records["value_nm"] = to_nm(records["value"].to_numpy(),
+                                records["unit"].to_numpy())
+
+    px_nm = {iid: infer_px_nm(g[["sx", "sy"]].to_numpy(),
+                              g[["ex", "ey"]].to_numpy(),
+                              g["value_nm"].to_numpy())
+             for iid, g in records.groupby("image_id", sort=False)}
+
+    parts = []
+    for (iid, cat), g in records.groupby(["image_id", "category_id"], sort=False):
+        f = extract_l3(images[iid],
+                       g[["sx", "sy"]].to_numpy(), g[["ex", "ey"]].to_numpy(),
+                       px_nm[iid], value_nm=g["value_nm"].to_numpy(),
+                       params=params)
+        for c in _TRUTH_COLS:
+            f[c] = g[c].to_numpy()
+        parts.append(f)
+    l3 = pd.concat(parts, ignore_index=True)
+
+    img_truth = (records.groupby("image_id", sort=False)
+                 .agg(injected_failure=("injected_failure", "first"),
+                      sev_rank=("sev_rank", "first")).reset_index())
+    l2 = extract_l2(l3, ["image_id", "category_id"], params).merge(
+        img_truth, on="image_id")
+    l1 = pd.DataFrame([{"image_id": iid, **extract_l1(img, params)}
+                       for iid, img in images.items()]).merge(
+        img_truth, on="image_id")
+    return l3, l2, l1
 
 
-def ensure_synth(cfg: Config, force: bool = False):
-    root = cfg.root / "data" / "synth"
-    if force or not (root / "records.csv").exists():
-        generate_dataset(cfg, root)
-    return root
+def _z_per_category(df: pd.DataFrame, base: pd.DataFrame,
+                    params: Params) -> pd.DataFrame:
+    """카테고리별 코호트로 통계 → z (코호트 분리는 호출자가 한다는 API 계약)."""
+    parts = []
+    for cat, g in df.groupby("category_id", sort=False):
+        st = cohort_stats(base[base["category_id"] == cat], params=params)
+        parts.append(apply_z(g, st, params))
+    return pd.concat(parts).sort_index()
 
 
-def _median_z(df: pl.DataFrame, feat: str, failure: str, rank: int,
-              scope: str, level: str, signed: bool = False) -> float:
-    """케이스 표본의 z 중앙값. signed=True면 부호 보존 z(zs_)로 계통 편향 측정.
+def run_selftest(sp: SynthParams | None = None,
+                 params: Params | None = None) -> tuple[str, bool]:
+    sp = sp or SynthParams()
+    params = params or Params()
+    records, images = generate_dataset(sp)
+    l3, l2, l1 = build_frames(records, images, params)
 
-    특이도(silent) 판정은 계통 반응만 본다 — worse_when="both" 피쳐의 directed
-    z(|z|)는 주입이 산포만 키워도 오르므로(예: defocus에서 delta 산포 증가),
-    편향 없는 산포 증가를 특이도 위반으로 치지 않는다.
-    """
-    zcol = f"zs_{feat}" if signed and f"zs_{feat}" in df.columns else f"z_{feat}"
-    if zcol not in df.columns:
-        return np.nan
-    sel = df.filter((pl.col("injected_failure") == failure)
-                    & (pl.col("sev_rank") == rank))
-    if level == "l3" and scope == "affected":
-        sel = sel.filter(pl.col("affected") == 1)
-    elif level == "l3" and scope == "unaffected":
-        sel = sel.filter(pl.col("affected") == 0)
-    z = sel[zcol].to_numpy()
-    z = z[np.isfinite(z)]
-    return float(np.median(z)) if len(z) else np.nan
+    base3 = l3[l3["injected_failure"] == "none"]
+    z3 = _z_per_category(l3, base3, params)
+    z2 = _z_per_category(l2, l2[l2["injected_failure"] == "none"], params)
 
+    base1 = l1[l1["injected_failure"] == "none"]
+    hists = np.stack([np.asarray(h) for h in base1["hist"]])
+    template = np.median(hists, axis=0)
+    template = template / template.sum()
+    l1 = l1.copy()
+    l1["hist_emd"] = [hist_emd(np.asarray(h), template) for h in l1["hist"]]
+    z1 = apply_z(l1, cohort_stats(l1[l1["injected_failure"] == "none"],
+                                  params=params), params)
 
-def run_selftest(cfg: Config, force: bool = False) -> tuple[str, bool]:
-    cfg2 = sandbox_cfg(cfg)
-    ensure_synth(cfg2, force=force)
-    records = io.load_records(cfg2)
-    l3, l2s, l1 = extract_features(cfg2, records=records, force=force)
+    frames = {"l3": z3, "l2": z2, "l1": z1}
+    t_soft = threshold_from_quantile(
+        top_feature(z3[z3["injected_failure"] == "none"])["top_z"], 0.90)
 
-    truth_cd = records.select(["image_id", "category_id", "cd_index",
-                               "injected_failure", "sev_rank", "affected"])
-    truth_img = records.group_by("image_id").agg(
-        pl.col("injected_failure").first(), pl.col("sev_rank").first(),
-        pl.col("injected_strength").first())
+    ranks_by_failure = {f: sorted(g["sev_rank"].unique())
+                        for f, g in records.groupby("injected_failure")}
 
-    base_ids = truth_img.filter(pl.col("injected_failure") == "none")["image_id"]
-    l3b = l3.filter(pl.col("image_id").is_in(base_ids))
-    l2b = l2s.filter(pl.col("image_id").is_in(base_ids))
-    l1b = l1.filter(pl.col("image_id").is_in(base_ids))
-    cs, thr = calibrate_frames(cfg2, l3b, l2b, l1b, write=False)
+    def median_z(level: str, feat: str, failure: str, rank: int,
+                 scope: str, signed: bool) -> float:
+        df = frames[level]
+        col = f"zs_{feat}" if signed and f"zs_{feat}" in df.columns else f"z_{feat}"
+        if col not in df.columns:
+            return np.nan
+        sel = df[(df["injected_failure"] == failure) & (df["sev_rank"] == rank)]
+        if level == "l3" and scope == "affected":
+            sel = sel[sel["affected"] == 1]
+        elif level == "l3" and scope == "unaffected":
+            sel = sel[sel["affected"] == 0]
+        z = sel[col].to_numpy(dtype=np.float64)
+        z = z[np.isfinite(z)]
+        return float(np.median(z)) if len(z) else np.nan
 
-    l1e = add_hist_emd(l1, cs)
-    l3z = cs.apply(l3, "l3", cfg2).join(truth_cd,
-                                        on=["image_id", "category_id", "cd_index"],
-                                        how="left")
-    l3sc = score_l3(l3z, cfg2, thr["t_soft"])
-    l2full = add_l2_runtime(l3sc, l2s, cfg2)
-    l2z = cs.apply(l2full, "l2", cfg2).join(truth_img, on="image_id", how="left")
-    l1z = cs.apply(l1e, "l1", cfg2).join(truth_img, on="image_id", how="left")
-    frames = {"l3": l3sc, "l2": l2z, "l1": l1z}
-
-    st = cfg["selftest"]
-    z_pass, z_spec = float(st["z_pass"]), float(st["z_specificity"])
-    slack = float(st["mono_slack"])
-    fringe = bool(cfg["synthetic"]["fringe"])
-
-    ranks_by_failure = {
-        key[0]: sorted(part["sev_rank"].unique().to_list())
-        for key, part in records.partition_by(["injected_failure"],
-                                              as_dict=True).items()
-    }
-
-    lines = ["# cdqc selftest — 피쳐 × 주입 실패 감도표",
-             f"# config_hash={cfg2.config_hash}  t_soft={thr['t_soft']:.3f}  "
-             f"t_seq={thr['t_seq']:.3f}  t_image={thr['t_image']:.3f}",
-             f"# 기준: 반응 = 단조증가(슬랙 {slack}) + 최종 z >= {z_pass} / "
-             f"침묵 = 전 강도 |z| < {z_spec}", ""]
+    lines = ["# cdqc selftest — 피쳐 × 주입 실패 감도표 (공개 API 경유)",
+             f"# 참고 t_soft(베이스라인 top_z p90) = {t_soft:.3f}",
+             f"# 기준: 반응 = 단조증가(슬랙 {MONO_SLACK}) + 최종 z >= {Z_PASS} / "
+             f"침묵 = 전 강도 |z(부호)| < {Z_SPEC}", ""]
     n_pass = n_fail = 0
 
     def eval_cell(failure: str, feat: str, level: str, scope: str,
                   kind: str) -> tuple[str, bool]:
         ranks = ranks_by_failure.get(failure, [])
-        zs = [_median_z(frames[level], feat, failure, r, scope, level,
-                        signed=(kind == "silent"))
+        zs = [median_z(level, feat, failure, r, scope, signed=(kind == "silent"))
               for r in ranks]
         finite = [z for z in zs if np.isfinite(z)]
         ztxt = " ".join(f"{z:+.1f}" if np.isfinite(z) else "  na" for z in zs)
         if kind == "respond":
             if not finite or not np.isfinite(zs[-1]):
                 return f"{ztxt}  (측정 불가)", False
-            mono = all(zs[i + 1] >= zs[i] - slack
+            mono = all(zs[i + 1] >= zs[i] - MONO_SLACK
                        for i in range(len(zs) - 1)
                        if np.isfinite(zs[i]) and np.isfinite(zs[i + 1]))
-            ok = mono and zs[-1] >= z_pass
+            ok = mono and zs[-1] >= Z_PASS
             return f"{ztxt}  mono={'Y' if mono else 'N'} final={zs[-1]:+.1f}", ok
         worst = max((abs(z) for z in finite), default=0.0)
-        return f"{ztxt}  max|z|={worst:.1f}", worst < z_spec
+        return f"{ztxt}  max|z|={worst:.1f}", worst < Z_SPEC
 
     for failure, exp in EXPECTATIONS.items():
         if failure not in ranks_by_failure:
             lines.append(f"[skip] {failure}: 합성 데이터에 케이스 없음")
             continue
         respond = list(exp["respond"])
-        if failure == "defocus" and fringe:
+        if failure == "defocus" and sp.fringe:
             respond += [("overshoot_s", "l3", "affected"),
                         ("overshoot_e", "l3", "affected")]
         for feat, level, scope in respond:
@@ -207,9 +222,11 @@ def run_selftest(cfg: Config, force: bool = False) -> tuple[str, bool]:
     all_pass = n_fail == 0
     lines.append(f"총평: PASS {n_pass}, FAIL {n_fail} → "
                  f"{'PASS' if all_pass else 'FAIL'}")
-    report = "\n".join(lines)
+    return "\n".join(lines), all_pass
 
-    summary_dir = cfg.path("output_dir") / cfg["report"]["summary_dir"]
-    summary_dir.mkdir(parents=True, exist_ok=True)
-    (summary_dir / "selftest.txt").write_text(report, encoding="utf-8")
-    return report, all_pass
+
+if __name__ == "__main__":
+    import sys
+    report, ok = run_selftest()
+    print(report)
+    sys.exit(0 if ok else 1)
