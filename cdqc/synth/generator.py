@@ -49,6 +49,7 @@ def _default_inject() -> dict:
         "mask_shift_px": [0, 2, 4],              # 마스크만 평행이동 (이미지 정상)
         "mask_ragged_p": [0, 0.15, 0.3],         # 경계 픽셀 플립 확률
         "rotated_frame_deg": [0, 10, 20],        # 시퀀스 전체 회전 배치 + CD 수 변경
+        "void_line_frac": [0, 0.25, 0.4],        # 양 끝을 층 안으로 당김(허공선)
     }
 
 

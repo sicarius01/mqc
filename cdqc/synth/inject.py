@@ -31,6 +31,7 @@ FAILURE_KEYS = {
     "mask_shift_px": "mask_shift",
     "mask_ragged_p": "mask_ragged",
     "rotated_frame_deg": "rotated_frame",
+    "void_line_frac": "void_line",
 }
 
 ROTATED_FRAME_CD_DROP = 4   # rotated_frame에서 카테고리당 줄이는 CD 수
@@ -170,6 +171,19 @@ def apply_case(case: Case, scene, rows: list[dict], sp,
         else:
             for i in picked:                # 앵커: 같은 선택, 블롭 없음
                 rows[i]["affected"] = 1
+    elif f == "void_line":
+        # "허공에 그은 선": 양 끝을 층 안쪽으로 당겨 계면을 안 건드리게 한다.
+        # 실데이터에서 cnr로는 정상과 구분되지 않던 실패 — bdist_ratio가 잡는다
+        frac = float(v)
+        n_cd = max(len({r["cd_index"] for r in rows}), 1)
+        picked = _pick_per_category(rows, max(n_cd // 3, 1), rng)
+        for i in picked:
+            r = rows[i]
+            if frac > 0:
+                w = r["ex"] - r["sx"]
+                r["sx"] += frac * w
+                r["ex"] -= frac * w
+            r["affected"] = 1           # frac=0은 앵커 (같은 선택, 이동 없음)
     elif f == "saturation":
         mods.sat_mult = float(v)
         for r in rows:

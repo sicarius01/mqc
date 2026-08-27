@@ -20,9 +20,10 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .api import (apply_z, cohort_stats, extract_l1, extract_l2, extract_l3,
-                  extract_mask_image, extract_mask_l3, hist_emd,
+from .api import (boundary_features, extract_l1, extract_l2, extract_l3,
+                  extract_mask_image, extract_mask_l3, hist_emd, mask_maps,
                   threshold_from_quantile, top_feature)
+from .normalize import cohort_z
 from .params import Params
 from .synth.generator import SynthParams, generate_dataset
 from .utils import infer_px_nm, to_nm
@@ -88,23 +89,55 @@ EXPECTATIONS: dict[str, dict[str, list[tuple[str, str, str]]]] = {
     "mask_shift": {
         "respond": [("mdist_s", "l3", "affected"), ("mdist_e", "l3", "affected"),
                     ("mgrad_s", "l3", "affected"), ("mgrad_e", "l3", "affected"),
+                    ("bdist_s", "l3", "affected"), ("bdist_e", "l3", "affected"),
                     ("mask_grad_agree", "lm", "all")],
-        "silent": [("cnr_s", "l3", "affected"), ("delta_s", "l3", "affected")],
+        "silent": [("cnr_s", "l3", "affected"), ("delta_s", "l3", "affected"),
+                   ("bgrad_s", "l3", "affected")],
     },
     "mask_ragged": {
         "respond": [("mask_boundary_rough", "lm", "all"),
                     ("mask_n_components", "lm", "all")],
         "silent": [("mdist_s", "l3", "affected")],
     },
+    # ---- 라벨 경계 (boundary_features) ------------------------------------
+    # "허공에 그은 선": 양 끝이 계면이 아니라 층 안에 있는 CD. 실데이터에서
+    # cnr이 정상 범위와 겹쳐 증거 강도로는 구분되지 않던 실패다
+    "void_line": {
+        "respond": [("bdist_ratio", "l3", "affected"),
+                    ("bdist_s", "l3", "affected")],
+        "silent": [("bdist_ratio", "l3", "unaffected")],
+    },
     # ---- 총체적 실패 (변경 #03 §2) ----------------------------------------
     "rotated_frame": {
         "respond": [("angle_median", "l2", "all"), ("n_cd", "l2", "all")],
-        "silent": [("delta_s", "l3", "affected")],
+        # 시퀀스가 통째로 회전하면 원형 잔차는 0이 된다 (중심이 같이 돈다) —
+        # 절대 각도를 z로 쓰던 시절의 가짜 민감도가 사라졌는지 확인하는 칸
+        "silent": [("delta_s", "l3", "affected"),
+                   ("angle_resid_seq", "l3", "affected")],
     },
 }
 
 _TRUTH_COLS = ("image_id", "category_id", "cd_index",
                "injected_failure", "sev_rank", "affected")
+
+# 합성 라벨맵의 라벨값 — 실데이터에서 관찰된 값(10, 30, 50, 70)을 흉내낸다
+_BG_LABEL = 10
+_BAND_LABEL_STEP = 20
+
+
+def _labelmap(masks: dict, iid: str, cats: list[str],
+              shape: tuple[int, int]) -> np.ndarray:
+    """카테고리별 이진 마스크 → 단일 채널 라벨맵 (mask_maps 입력).
+
+    사내 사용자는 세그멘테이션 PNG를 직접 읽어 라벨맵을 만든다 — 여기서는
+    합성 마스크를 합쳐 같은 모양의 입력을 만든다.
+    """
+    lab = np.full(shape, _BG_LABEL, dtype=np.int32)
+    for k, cat in enumerate(cats):
+        m = masks.get((iid, cat))
+        if m is not None:
+            lab[m] = _BG_LABEL + _BAND_LABEL_STEP * (k + 1)
+    return lab
 
 
 def build_frames(records: pd.DataFrame, images: dict[str, np.ndarray],
@@ -120,6 +153,11 @@ def build_frames(records: pd.DataFrame, images: dict[str, np.ndarray],
                               g["value_nm"].to_numpy())
              for iid, g in records.groupby("image_id", sort=False)}
 
+    cats = sorted({c for (_, c) in masks})
+    # img를 함께 넘기면 bgrad_s/e(보고 좌표 자리의 명암 전이 증거)까지 나온다
+    maps = {iid: mask_maps(_labelmap(masks, iid, cats, img.shape), img)
+            for iid, img in images.items()}
+
     parts = []
     lm_rows = []
     for (iid, cat), g in records.groupby(["image_id", "category_id"], sort=False):
@@ -127,10 +165,12 @@ def build_frames(records: pd.DataFrame, images: dict[str, np.ndarray],
         E = g[["ex", "ey"]].to_numpy()
         f = extract_l3(images[iid], S, E, px_nm[iid],
                        value_nm=g["value_nm"].to_numpy(), params=params)
-        # 마스크 정합 피쳐 — extract_l3와 행 순서가 같아 index로 join
+        # 마스크 정합 피쳐 — extract_l3와 행 순서가 같아 index로 join.
+        # 라벨맵 경로(boundary_features)가 권장 경로, 이진 마스크 경로는 mgrad용
+        fb = boundary_features(maps[iid], S, E, px_nm[iid], params=params)
         fm = extract_mask_l3(masks[(iid, cat)], images[iid], S, E,
                              px_nm[iid], params=params)
-        f = pd.concat([f, fm], axis=1)
+        f = pd.concat([f, fb, fm], axis=1)
         for c in _TRUTH_COLS:
             f[c] = g[c].to_numpy()
         parts.append(f)
@@ -151,14 +191,12 @@ def build_frames(records: pd.DataFrame, images: dict[str, np.ndarray],
     return l3, l2, l1, lm
 
 
-def _z_per_category(df: pd.DataFrame, base: pd.DataFrame,
-                    params: Params) -> pd.DataFrame:
-    """카테고리별 코호트로 통계 → z (코호트 분리는 호출자가 한다는 API 계약)."""
-    parts = []
-    for cat, g in df.groupby("category_id", sort=False):
-        st = cohort_stats(base[base["category_id"] == cat], params=params)
-        parts.append(apply_z(g, st, params))
-    return pd.concat(parts).sort_index()
+def _z_per_category(df: pd.DataFrame, base_mask, params: Params) -> pd.DataFrame:
+    """카테고리별 코호트 z — 코호트 축(category_id)은 호출자가 정한다는 API 계약.
+
+    cohort_z가 카테고리 MAD 사망 시 pooled 폴백과 z 상한까지 얹어준다.
+    """
+    return cohort_z(df, ["category_id"], base_mask=base_mask, params=params)
 
 
 def run_selftest(sp: SynthParams | None = None,
@@ -168,10 +206,9 @@ def run_selftest(sp: SynthParams | None = None,
     records, images, masks = generate_dataset(sp)
     l3, l2, l1, lm = build_frames(records, images, masks, params)
 
-    base3 = l3[l3["injected_failure"] == "none"]
-    z3 = _z_per_category(l3, base3, params)
-    z2 = _z_per_category(l2, l2[l2["injected_failure"] == "none"], params)
-    zm = _z_per_category(lm, lm[lm["injected_failure"] == "none"], params)
+    z3 = _z_per_category(l3, l3["injected_failure"] == "none", params)
+    z2 = _z_per_category(l2, l2["injected_failure"] == "none", params)
+    zm = _z_per_category(lm, lm["injected_failure"] == "none", params)
 
     base1 = l1[l1["injected_failure"] == "none"]
     hists = np.stack([np.asarray(h) for h in base1["hist"]])
@@ -179,8 +216,8 @@ def run_selftest(sp: SynthParams | None = None,
     template = template / template.sum()
     l1 = l1.copy()
     l1["hist_emd"] = [hist_emd(np.asarray(h), template) for h in l1["hist"]]
-    z1 = apply_z(l1, cohort_stats(l1[l1["injected_failure"] == "none"],
-                                  params=params), params)
+    z1 = cohort_z(l1, None, base_mask=l1["injected_failure"] == "none",
+                  params=params)
 
     frames = {"l3": z3, "l2": z2, "l1": z1, "lm": zm}
     t_soft = threshold_from_quantile(
