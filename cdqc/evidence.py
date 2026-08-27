@@ -88,6 +88,56 @@ def _local_maxima(y: np.ndarray) -> np.ndarray:
     return np.where((y[1:-1] > y[:-2]) & (y[1:-1] >= y[2:]))[0] + 1
 
 
+def search_window(prof: Profile, expected_s: float, inward: float,
+                  cfg: dict) -> tuple[np.ndarray, float, float]:
+    """엔드포인트 탐색 창의 샘플 인덱스와 (안쪽, 바깥쪽) 한계 (px).
+
+    창 크기 W = clamp(win_frac·L, win_min, win_max). 바깥쪽은 프로파일이
+    실제로 샘플된 범위(effective_margin)를 넘지 않는다. analyze_endpoint와
+    σ 스윕이 **같은 창**을 봐야 delta_B가 delta와 비교 가능하다.
+    """
+    W = float(np.clip(cfg["win_frac"] * prof.L, cfg["win_min_px"], cfg["win_max_px"]))
+    half = W / 2
+    out_lim = min(half, effective_margin(prof.L, cfg))
+    in_lim = min(half, prof.L / 2)
+    lo = expected_s - (out_lim if inward > 0 else in_lim)
+    hi = expected_s + (in_lim if inward > 0 else out_lim)
+    return np.where((prof.s >= lo) & (prof.s <= hi))[0], in_lim, out_lim
+
+
+def gradient_of(prof: Profile, grad_sigma_px: float) -> np.ndarray:
+    """프로파일의 1차 도함수 — 가우시안 스무딩과 미분을 한 번에.
+
+    컨볼루션 미분 정리에 의해 "가우시안 스무딩 후 미분"과 수학적으로 동일하다.
+    """
+    return gaussian_filter1d(prof.p, sigma=float(grad_sigma_px) / DS, order=1) / DS
+
+
+def sweep_delta_px(prof: Profile, expected_s: float, inward: float,
+                   cfg: dict) -> tuple[float, float]:
+    """σ를 훑으며 잰 delta의 (중앙값, MAD) — px, 부호 있음.
+
+    delta 하나는 grad_sigma_px에 의존한다. σ를 훑으면 그 의존성이 사라지고
+    (중앙값 = delta_B), 산포(MAD = delta_scatter)는 **엣지가 실제로 있는지**를
+    재는 독립 피쳐가 된다 — 엣지가 없으면 피크가 σ 따라 떠다닌다.
+    """
+    sweep = cfg.get("delta_sigma_sweep") or (cfg["grad_sigma_px"],)
+    vals = []
+    for sig in sweep:
+        idx, _, _ = search_window(prof, expected_s, inward,
+                                  {**cfg, "grad_sigma_px": sig})
+        if len(idx) < 5:
+            continue
+        ga = np.abs(gradient_of(prof, sig)[idx])
+        vals.append(_halfmax_centroid(prof.s[idx], ga, int(np.argmax(ga)))
+                    - expected_s)
+    if not vals:
+        return (np.nan, np.nan)
+    v = np.asarray(vals, dtype=np.float64)
+    med = float(np.median(v))
+    return (med, float(np.median(np.abs(v - med))))
+
+
 def analyze_endpoint(prof: Profile, g: np.ndarray, expected_s: float,
                      inward: float, px_nm: float, cfg: dict) -> EndpointEvidence:
     """한 엔드포인트의 증거 피쳐. inward = +1(S) / -1(E): 플래토 쪽 방향."""
@@ -95,13 +145,7 @@ def analyze_endpoint(prof: Profile, g: np.ndarray, expected_s: float,
     nan = EndpointEvidence(np.nan, np.nan, np.nan, np.nan, np.nan, np.nan,
                            0.0, False, np.nan)
 
-    W = float(np.clip(cfg["win_frac"] * prof.L, cfg["win_min_px"], cfg["win_max_px"]))
-    half = W / 2
-    out_lim = min(half, effective_margin(prof.L, cfg))
-    in_lim = min(half, prof.L / 2)
-    lo = expected_s - (out_lim if inward > 0 else in_lim)
-    hi = expected_s + (in_lim if inward > 0 else out_lim)
-    idx = np.where((s >= lo) & (s <= hi))[0]
+    idx, in_lim, out_lim = search_window(prof, expected_s, inward, cfg)
     if len(idx) < 5:
         return nan
 
@@ -183,15 +227,18 @@ def plateau_cv(prof: Profile, s_peak_s: float, s_peak_e: float,
 
 def evidence_features(prof: Profile, px_nm: float, cfg: dict) -> dict:
     """한 CD의 이미지 증거 피쳐 전체를 dict로."""
-    sigma_samples = float(cfg["grad_sigma_px"]) / DS
-    g = gaussian_filter1d(prof.p, sigma=sigma_samples, order=1) / DS
+    g = gradient_of(prof, cfg["grad_sigma_px"])
 
     ev_s = analyze_endpoint(prof, g, 0.0, +1.0, px_nm, cfg)
     ev_e = analyze_endpoint(prof, g, prof.L, -1.0, px_nm, cfg)
     pcv = plateau_cv(prof, ev_s.s_peak, ev_e.s_peak, float(cfg["grad_sigma_px"]))
+    dB_s, dsc_s = sweep_delta_px(prof, 0.0, +1.0, cfg)
+    dB_e, dsc_e = sweep_delta_px(prof, prof.L, -1.0, cfg)
 
     return {
         "delta_s": ev_s.delta_nm, "delta_e": ev_e.delta_nm,
+        "delta_B_s": dB_s, "delta_B_e": dB_e,
+        "delta_scatter_s": dsc_s, "delta_scatter_e": dsc_e,
         "cnr_s": ev_s.cnr, "cnr_e": ev_e.cnr,
         "rise_s": ev_s.rise_nm, "rise_e": ev_e.rise_nm,
         "margin_s": ev_s.margin, "margin_e": ev_e.margin,

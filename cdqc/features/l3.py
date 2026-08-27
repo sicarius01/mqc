@@ -3,6 +3,9 @@
 한 시퀀스(image × category, cd_index 순)에 대해 기하/시퀀스 잔차와 이미지
 증거 피쳐를 계산한다. 입력 좌표는 io.transform_coords를 거친 내부 컨벤션
 (x=col, y=row, zero-origin)이어야 한다.
+
+마지막에 sanitize()가 비율 피쳐의 분모 폭발을 막는다 — **카테고리 예외가
+아니라 피쳐 자체의 일반 규칙**이다 (spec §3.2).
 """
 
 from __future__ import annotations
@@ -48,8 +51,11 @@ def l3_sequence_features(img: np.ndarray | None, S: np.ndarray, E: np.ndarray,
         "curv_e": geo.curvature3(E) * px_nm,
         "angle": geo.segment_angle_deg(seg),
     }
+    out["angle_resid_seq"] = geo.circular_residual_deg180(out["angle"])
 
-    ev_names = ["delta_s", "delta_e", "cnr_s", "cnr_e", "rise_s", "rise_e",
+    ev_names = ["delta_s", "delta_e", "delta_B_s", "delta_B_e",
+                "delta_scatter_s", "delta_scatter_e",
+                "cnr_s", "cnr_e", "rise_s", "rise_e",
                 "margin_s", "margin_e", "npk_s", "npk_e",
                 "overshoot_s", "overshoot_e", "plateau_cv", "pol_s", "pol_e"]
     if img is None:
@@ -65,4 +71,36 @@ def l3_sequence_features(img: np.ndarray | None, S: np.ndarray, E: np.ndarray,
         out[name] = np.array([r[name] for r in rows], dtype=np.float64)
     out["edge_valid_s"] = np.array([r["edge_valid_s"] for r in rows], dtype=bool)
     out["edge_valid_e"] = np.array([r["edge_valid_e"] for r in rows], dtype=bool)
-    return out
+    return sanitize(out, px_nm, cfg.get("sanitize", {}))
+
+
+def sanitize(feats: dict[str, np.ndarray], px_nm: float,
+             cfg: dict) -> dict[str, np.ndarray]:
+    """비율 피쳐의 분모 폭발을 막는 **일반 규칙** (제자리 수정 후 같은 dict 반환).
+
+    카테고리 예외 목록이 아니다 (spec §11-1). 스텝이 노이즈 수준이면
+    `overshoot = 오버슈트 진폭 / 스텝 높이`는 0으로 나눈 값이고,
+    1px의 절반도 안 되는 `rise`는 물리적으로 측정 불가다 — 어느 카테고리든
+    같은 조건에서 같은 이유로 무의미하므로 NaN(= 미측정)으로 만든다.
+
+    두 규칙 모두 임계는 Params.min_cnr_for_ratio / min_rise_px.
+    """
+    min_cnr = float(cfg.get("min_cnr_for_ratio", 0.0))
+    min_rise_nm = float(cfg.get("min_rise_px", 0.0)) * float(px_nm)
+    for tag in ("s", "e"):
+        cnr = feats.get(f"cnr_{tag}")
+        rise = feats.get(f"rise_{tag}")
+        over = feats.get(f"overshoot_{tag}")
+        # rise < min_rise_px: 엣지 폭이 subpixel — 상승폭을 잰 게 아니라
+        # 샘플 격자를 잰 것이다
+        if rise is not None and min_rise_nm > 0:
+            rise[np.isfinite(rise) & (rise < min_rise_nm)] = np.nan
+        if over is None:
+            continue
+        bad = np.zeros(len(over), dtype=bool)
+        if cnr is not None and min_cnr > 0:
+            bad |= ~np.isfinite(cnr) | (cnr < min_cnr)     # 스텝이 노이즈 수준
+        if rise is not None:
+            bad |= ~np.isfinite(rise)                       # 스텝을 못 쟀음
+        over[bad] = np.nan
+    return feats

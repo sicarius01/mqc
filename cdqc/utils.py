@@ -15,44 +15,53 @@ from scipy.ndimage import map_coordinates
 
 from .errors import CdqcError
 
-_ANGSTROM_TOKENS = {"å", "a", "angstrom", "ang"}
-_NM_TOKENS = {"nm", "nanometer", "nanometre"}
+# 단위 토큰 → nm 환산 계수. SI 접두어는 모호하지 않으므로 추측이 아니다.
+# 실데이터 xlsx의 MeasurementUnit이 "m"인 경우가 있어 미터 계열이 필요하다.
+_UNIT_ALIASES: dict[str, str] = {
+    "å": "angstrom", "a": "angstrom", "angstrom": "angstrom", "ang": "angstrom",
+    "nm": "nm", "nanometer": "nm", "nanometre": "nm",
+    "m": "m", "meter": "m", "metre": "m",
+    "mm": "mm", "millimeter": "mm", "millimetre": "mm",
+    "um": "um", "μm": "um", "micron": "um",
+    "micrometer": "um", "micrometre": "um",
+    "pm": "pm", "picometer": "pm", "picometre": "pm",
+}
+_TO_NM: dict[str, float] = {"angstrom": 0.1, "nm": 1.0, "pm": 1e-3,
+                            "um": 1e3, "mm": 1e6, "m": 1e9}
 
 
 # ---------------------------------------------------------------- 단위
 
 def normalize_unit(s) -> str | None:
-    """단위 문자열 → "angstrom" | "nm" | None(인식 불가).
+    """단위 문자열 → 정규 토큰 ("angstrom"|"pm"|"nm"|"um"|"mm"|"m") 또는 None.
 
-    NFKC 정규화로 U+00C5(Å)/U+212B(ANGSTROM SIGN)/NFD("A"+U+030A)를 통일한
-    뒤 소문자 비교. 목록 밖 값은 None — 호출부가 추측 없이 중단해야 한다.
+    NFKC 정규화로 U+00C5(Å)/U+212B(ANGSTROM SIGN)/NFD("A"+U+030A)와
+    U+00B5(MICRO SIGN)/U+03BC(GREEK SMALL MU)를 통일한 뒤 소문자 비교.
+    **목록 밖 값은 None** — 호출부가 추측 없이 중단해야 한다.
     """
     if s is None:
         return None
     t = unicodedata.normalize("NFKC", str(s).strip()).lower()
-    if t in _ANGSTROM_TOKENS:
-        return "angstrom"
-    if t in _NM_TOKENS:
-        return "nm"
-    return None
+    return _UNIT_ALIASES.get(t)
 
 
 def to_nm(value, unit) -> np.ndarray:
     """측정값 → nm. unit은 스칼라 문자열 또는 행별 배열.
 
-    알 수 없는 단위는 발견된 고유값 목록과 함께 E-ARG-03으로 즉시 중단.
+    Å/pm/nm/µm/mm/m을 인식한다. 알 수 없는 단위는 발견된 고유값 목록과 함께
+    E-ARG-03으로 즉시 중단 — **추측하지 않는다.**
     """
     v = np.asarray(value, dtype=np.float64)
     if np.isscalar(unit) or isinstance(unit, str):
         units = np.full(v.shape, unit, dtype=object)
     else:
         units = np.asarray(unit, dtype=object)
-    norm = np.array([normalize_unit(u) for u in units.ravel()], dtype=object)
+    norm = [normalize_unit(u) for u in units.ravel()]
     unknown = sorted({str(u) for u, n in zip(units.ravel(), norm) if n is None})
     if unknown:
         raise CdqcError("E-ARG-03", f"unknown unit: {unknown[0]!r} — 고유값: {unknown}")
-    factor = np.where(norm == "angstrom", 0.1, 1.0).reshape(v.shape)
-    return v * factor
+    factor = np.array([_TO_NM[n] for n in norm], dtype=np.float64)
+    return v * factor.reshape(v.shape)
 
 
 # ---------------------------------------------------------------- px_nm
@@ -117,6 +126,38 @@ def to_uint8(img: np.ndarray, method: str = "percentile",
     if hi <= lo:
         return np.zeros(img.shape, dtype=np.uint8)
     return np.clip((f - lo) / (hi - lo) * 255.0, 0, 255).astype(np.uint8)
+
+
+def close_annotation(bgr: np.ndarray, ksize: int = 5,
+                     tol: int = 12) -> np.ndarray:
+    """세그멘테이션 PNG에서 **컬러 주석이 덮어쓴 라벨을 복구** (순수 배열 연산).
+
+    세그멘테이션 결과 PNG는 그레이스케일 라벨맵 위에 CD가 컬러 선으로 그려져
+    나오는 경우가 있다. 주석 픽셀은 라벨을 덮으므로 마스크가 잘리고, 그대로
+    쓰면 연결 성분이 쪼개지고 경계가 주석 모양을 따라간다.
+
+    라벨값과 클래스 수는 데이터마다 다르므로 **자동 탐색**한다 (주석이 아닌
+    픽셀의 고유값). 클래스별로 morphological closing을 돌려, **주석이 있던
+    자리에서만** 채운다 — 원래 라벨 영역은 건드리지 않는다.
+
+    bgr: (H, W, 3) BGR 배열. tol: 채널 간 차가 이보다 크면 컬러(주석)로 본다.
+    반환: 같은 shape·dtype의 BGR 배열 (그레이스케일 복원본을 3채널로).
+    """
+    import cv2
+
+    if not (isinstance(bgr, np.ndarray) and bgr.ndim == 3 and bgr.shape[2] == 3):
+        raise CdqcError("E-ARG-02", f"BGR (H,W,3) 필요 — got {getattr(bgr, 'shape', type(bgr))}")
+    b, g, r = (bgr[..., i].astype(np.int16) for i in range(3))
+    is_color = ((np.abs(r - g) > tol) | (np.abs(g - b) > tol)
+                | (np.abs(r - b) > tol))
+    gray = bgr[..., 1]
+    out = gray.copy()
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksize, ksize))
+    for v in np.unique(gray[~is_color]):          # 라벨값 자동 탐색
+        m = ((gray == v) & ~is_color).astype(np.uint8)
+        filled = cv2.morphologyEx(m, cv2.MORPH_CLOSE, k).astype(bool)
+        out[is_color & filled] = v                # 주석 자리에서만 채움
+    return cv2.cvtColor(out, cv2.COLOR_GRAY2BGR).astype(bgr.dtype)
 
 
 # ---------------------------------------------------------------- 좌표 컨벤션

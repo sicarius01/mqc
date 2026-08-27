@@ -198,3 +198,24 @@ def circular_mad_deg180(angles_deg: np.ndarray) -> float:
     med = circular_median_deg180(a)
     dev = np.mod(a - med + 90.0, 180.0) - 90.0   # [-90, 90)
     return float(np.median(np.abs(dev)))
+
+
+def circular_residual_deg180(angles_deg: np.ndarray,
+                             center: float | None = None) -> np.ndarray:
+    """시퀀스 원형 중앙값 대비 각도 잔차 (deg, [-90, 90), 부호 있음).
+
+    **절대 각도는 z를 낼 수 없다** (spec §3.2): ① 180° 주기 원형 변수라 뺄셈
+    자체가 정의되지 않고 (179°와 −179°가 358 차이로 계산됨), ② 같은 카테고리의
+    CD는 각도가 거의 똑같아 MAD가 0.01° 수준이라 0.5° 차이가 z 50이 되며,
+    ③ TEM은 시료 방향이 매번 달라 절대 각도 자체가 의미 없다. 원형 잔차로
+    바꾸면 셋 다 사라진다 — **변환이 필수인 경우**이지, 정보가 없어서 뺀 것이
+    아니다.
+
+    시퀀스가 통째로 회전한 경우는 여기서 0이 된다 (중심이 같이 돈다).
+    그건 L2 `angle_median`이 코호트 대비로 잡는 실패다.
+    """
+    a = np.asarray(angles_deg, dtype=np.float64)
+    ctr = circular_median_deg180(a) if center is None else float(center)
+    if not np.isfinite(ctr):
+        return np.full(len(a), np.nan)
+    return np.mod(a - ctr + 90.0, 180.0) - 90.0
