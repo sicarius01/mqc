@@ -106,3 +106,43 @@ def test_convention_scores_picks_truth(params):
     assert (best["convention"], best["origin"], best["y_flip"]) == ("xy", "zero", False)
     assert best["median_dist_px"] < 0.75
     assert table.iloc[1]["median_dist_px"] / max(best["median_dist_px"], 0.1) >= 2.0
+
+
+def _label_bgr(h=60, w=60):
+    import cv2
+    lab = np.full((h, w), 10, dtype=np.uint8)
+    lab[:, 20:41] = 50
+    return cv2.cvtColor(lab, cv2.COLOR_GRAY2BGR), lab
+
+
+def test_close_annotation_restores_labels_under_color_line():
+    """컬러 주석이 덮은 라벨을 closing으로 복구 — 원본과 일치해야 한다."""
+    bgr, lab = _label_bgr()
+    bgr = bgr.copy()
+    bgr[:, 29:32] = (0, 0, 255)          # 3px 빨간 CD 선이 라벨을 덮음
+    out = cdqc.close_annotation(bgr)
+    assert np.array_equal(out[..., 1], lab)
+    assert out.shape == bgr.shape and out.dtype == bgr.dtype
+
+
+def test_close_annotation_leaves_clean_labelmap_alone():
+    bgr, lab = _label_bgr()
+    assert np.array_equal(cdqc.close_annotation(bgr)[..., 1], lab)
+
+
+def test_close_annotation_fixes_downstream_boundary_features():
+    """주석 오염은 라벨 전이를 가짜로 만든다 — 복구하면 원래 경계로 돌아온다."""
+    bgr, lab = _label_bgr()
+    dirty = bgr.copy()
+    dirty[:, 29:32] = (0, 0, 255)
+    n_clean = cdqc.mask_maps(lab)["boundary"].sum()
+    n_dirty = cdqc.mask_maps(dirty[..., 1])["boundary"].sum()
+    n_fixed = cdqc.mask_maps(cdqc.close_annotation(dirty)[..., 1])["boundary"].sum()
+    assert n_dirty > n_clean                 # 가짜 전이가 생겼다
+    assert n_fixed == n_clean
+
+
+def test_close_annotation_rejects_non_bgr():
+    with pytest.raises(cdqc.CdqcError) as e:
+        cdqc.close_annotation(np.zeros((10, 10), dtype=np.uint8))
+    assert e.value.code == "E-ARG-02"

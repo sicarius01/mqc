@@ -98,3 +98,45 @@ def test_theil_sen_robust_linear():
     r = geo.local_residual_1d(v, 9, "robust_linear", 5)
     assert abs(r[9] - 10.0) < 1.0
     assert np.nanmedian(np.abs(np.delete(r, 9))) < 0.5
+
+
+def test_circular_residual_at_wrap_boundary():
+    """±90° 랩 경계 — 89.9°와 -89.9°는 0.2° 차이지 179.8° 차이가 아니다."""
+    a = np.array([89.9, -89.9, 89.5, -89.7])
+    r = geo.circular_residual_deg180(a)
+    assert np.abs(r).max() < 1.0
+    assert np.all(np.abs(r) <= 90.0)
+
+
+def test_circular_residual_mixes_zero_and_179():
+    """0°와 179.9°는 같은 방향이다 (180° 주기) — 잔차가 0.1° 수준."""
+    a = np.array([0.0, 179.9, 0.1, 179.8, 0.0])
+    r = geo.circular_residual_deg180(a)
+    assert np.abs(r).max() < 0.5
+
+
+def test_circular_residual_isolates_a_rotated_member():
+    a = np.array([10.0, 11.0, 10.5, 40.0, 10.2, 10.8, 11.1])
+    r = geo.circular_residual_deg180(a)
+    assert abs(r[3] - 29.4) < 1.0
+    assert np.max(np.abs(np.delete(r, 3))) < 1.5
+
+
+def test_circular_residual_zero_when_whole_sequence_rotates():
+    """시퀀스가 통째로 돌면 중심도 같이 돈다 → 잔차 0.
+
+    총체적 회전은 L2 angle_median이 코호트 대비로 잡을 실패지, CD 레벨
+    잔차가 잡을 실패가 아니다.
+    """
+    a = np.array([10.0, 11.0, 9.5, 10.5, 10.2])
+    r0 = geo.circular_residual_deg180(a)
+    r1 = geo.circular_residual_deg180(a + 35.0)
+    # 원형 중앙값은 atan2(median sin, median cos)이라 회전 등가성이 수치
+    # 오차 수준(1e-5 deg)까지만 성립한다 — 물리적으로는 0
+    assert np.allclose(r0, r1, atol=1e-3)
+
+
+def test_circular_residual_explicit_center():
+    r = geo.circular_residual_deg180(np.array([5.0]), center=0.0)
+    assert r[0] == pytest.approx(5.0)
+    assert np.isnan(geo.circular_residual_deg180(np.array([np.nan, np.nan]))).all()
