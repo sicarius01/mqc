@@ -17,7 +17,9 @@ import pandas as pd
 from .errors import CdqcError
 from .features.l1 import hist_emd, l1_image_features
 from .features.l3 import l3_sequence_features
+from .features.mask import boundary_features as _boundary_features
 from .features.mask import mask_image_features, mask_l3_features
+from .features.mask import mask_maps as _mask_maps
 from .features.registry import BY_NAME, REGISTRY, Z_ON_BAD, features_of
 from .geometry import circular_mad_deg180, circular_median_deg180
 from .params import Params
@@ -76,8 +78,11 @@ def extract_l3(img: np.ndarray | None, S, E, px_nm: float,
 
     order = [f.name for f in features_of("l3") if f.name in feats]
     out = pd.DataFrame({name: feats[name] for name in order})
-    # 캐리어 컬럼 (피쳐 아님): extract_l2의 pitch/span 계산과 오버레이용
+    # 캐리어 컬럼 (피쳐 아님): extract_l2의 pitch/span, 궤적 진단, 오버레이용.
+    # 좌표를 실어두면 l3 프레임 하나로 L2와 진단까지 갈 수 있다
     mid = (S + E) / 2.0
+    out["s_x"], out["s_y"] = S[:, 0], S[:, 1]
+    out["e_x"], out["e_y"] = E[:, 0], E[:, 1]
     out["mid_x"] = mid[:, 0]
     out["mid_y"] = mid[:, 1]
     out["px_nm"] = float(px_nm)
@@ -90,7 +95,12 @@ def extract_l2(l3_df: pd.DataFrame, group_cols: list[str] | None = None,
 
     group_cols=None이면 l3_df 전체를 한 시퀀스로 취급한다.
     플래그 의존 값(frac_flagged/max_run/impact)은 사용자가 플래그를 정한 뒤
-    impact_nm()/max_run()으로 직접 계산한다.
+    flag_rollup()/impact_nm()으로 직접 계산한다.
+
+    **CD 레벨로는 원리적으로 볼 수 없는 실패가 여기서 잡힌다**: 시퀀스가
+    통째로 밀리면 모든 CD가 똑같이 밀려 이웃 대비 잔차가 0이 되고, 없어진
+    CD는 행 자체가 없어 z를 낼 수 없다. 이미지 × 카테고리 요약값을 같은
+    카테고리의 **다른 이미지들**과 비교해야 보인다.
     """
     def agg(g: pd.DataFrame) -> dict:
         cd = g["cd_nm"].to_numpy(dtype=np.float64)
@@ -102,6 +112,10 @@ def extract_l2(l3_df: pd.DataFrame, group_cols: list[str] | None = None,
                        if np.isfinite(cd).any() else np.nan),
         }
         for c, name in (("delta_s", "delta_median_s"), ("delta_e", "delta_median_e")):
+            x = g[c].to_numpy(dtype=np.float64) if c in g else np.array([np.nan])
+            out[name] = np.nanmedian(x) if np.isfinite(x).any() else np.nan
+        for c, name in (("bdist_s", "bdist_median_s"),
+                        ("bdist_e", "bdist_median_e")):
             x = g[c].to_numpy(dtype=np.float64) if c in g else np.array([np.nan])
             out[name] = np.nanmedian(x) if np.isfinite(x).any() else np.nan
         for c, name in (("s_resid", "traj_rms_s"), ("e_resid", "traj_rms_e")):
@@ -155,9 +169,63 @@ def _check_mask(mask, img: np.ndarray) -> np.ndarray:
     return mask.astype(bool)
 
 
+def mask_maps(labelmap: np.ndarray, img: np.ndarray | None = None) -> dict:
+    """라벨맵 → 경계/거리 맵. **이미지당 1회만** 계산해서 재사용한다.
+
+    labelmap: 단일 채널 int 배열 (H, W). 세그멘테이션 PNG가 컬러 주석에
+    덮여 있으면 `close_annotation()`으로 먼저 복구한다.
+
+    경계는 **모든 라벨 전이의 합집합**이라 클래스를 고를 필요가 없다 —
+    카테고리 × 클래스마다 distance transform을 돌리던 방식 대비 이미지당
+    1회로 줄고, CD의 S와 E가 서로 다른 계면에 있어도 둘 다 측정된다.
+    반환값을 `boundary_features()`에 그대로 넘긴다.
+
+    img(uint8, 라벨맵과 같은 shape)를 함께 주면 그래디언트/국소 σ 맵도 만들어
+    `bgrad_s/e`(보고 좌표 그 자리의 명암 전이 증거)를 낼 수 있다.
+    """
+    lab = np.asarray(labelmap)
+    if lab.ndim != 2:
+        raise CdqcError("E-ARG-02", f"라벨맵은 2D — got ndim={lab.ndim}")
+    if img is not None:
+        _check_image(img)
+        if img.shape != lab.shape:
+            raise CdqcError("E-ARG-07", f"img{img.shape} vs labelmap{lab.shape}")
+    return _mask_maps(lab, img)
+
+
+def boundary_features(maps: dict, S, E, px_nm: float,
+                      params: Params | None = None) -> pd.DataFrame:
+    """한 시퀀스의 CD별 라벨 경계 정합 피쳐 — **마스크 정합의 권장 경로**.
+
+    bdist_s/e/mid (nm), bdist_ratio, label_runs. extract_l3 출력과 행 순서가
+    같으므로 index로 join해서 쓴다.
+
+    `bdist_ratio = max(bdist_s, bdist_e) / bdist_mid`는 비율이라 배율에
+    무관하고, **cnr로는 구분되지 않던 실패**를 잡는다: 계면이 아니라 층 안
+    허공에 그어진 CD는 양 끝의 그래디언트 증거(cnr)가 정상 범위와 겹치지만
+    bdist_ratio는 ≈1이 된다 (정상 CD는 ≈0).
+    """
+    if not isinstance(maps, dict) or "dist_px" not in maps:
+        raise CdqcError("E-ARG-02", "maps는 mask_maps() 반환값이어야 함")
+    S, E = _check_points(S, E)
+    if not (np.isfinite(px_nm) and px_nm > 0):
+        raise CdqcError("E-ARG-06", f"px_nm={px_nm}")
+    params = params or Params()
+    feats = _boundary_features(maps, S, E, float(px_nm),
+                               params.view().get("boundary"))
+    order = [f.name for f in features_of("l3") if f.name in feats]
+    return pd.DataFrame({name: feats[name] for name in order})
+
+
 def extract_mask_l3(mask: np.ndarray, img: np.ndarray, S, E, px_nm: float,
                     params: Params | None = None) -> pd.DataFrame:
     """한 시퀀스의 CD별 마스크 정합 피쳐 (mdist/mgrad/minside).
+
+    **초기 방식이다 — 새 코드는 `mask_maps` + `boundary_features`를 쓸 것.**
+    여기는 이진 마스크 하나(= 클래스 하나)만 보므로 (a) 어느 클래스를 볼지
+    골라야 하고, (b) CD의 S와 E가 서로 다른 계면에 있으면 한 클래스로는
+    측정할 수 없으며, (c) 카테고리 × 클래스마다 distance transform을 돌린다.
+    mgrad(경계 위치의 이미지 증거)가 필요할 때를 위해 유지한다.
 
     마스크는 이진 ndarray (bool 또는 uint8 0/비0), 이미지와 같은 shape —
     라벨맵의 클래스별 이진 분리·리사이즈는 사용자가 명시적으로 한다.
@@ -191,11 +259,17 @@ def extract_mask_image(mask: np.ndarray, img: np.ndarray,
 
 # ================================================================ 통계·정규화
 
-def robust_stats(x, trim_frac: float = 0.05) -> tuple[float, float]:
-    """트림 1회 적용한 (median, MAD). 유효 표본 없으면 (nan, nan)."""
+def robust_stats(x, trim_frac: float = 0.05,
+                 min_n: int = 1) -> tuple[float, float]:
+    """트림 1회 적용한 (median, MAD). 유효 표본이 min_n 미만이면 (nan, nan).
+
+    min_n은 "표본이 너무 적어 통계를 못 낸다"를 NaN으로 정직하게 표현한다 —
+    n=2로 낸 MAD로 z를 만드는 것보다 낫다. NaN z는 aggregate_z의
+    `n_z_valid`에 반영되므로 하류에서 추적된다.
+    """
     x = np.asarray(x, dtype=np.float64)
     x = x[np.isfinite(x)]
-    if len(x) == 0:
+    if len(x) < max(1, int(min_n)):
         return (np.nan, np.nan)
     med = float(np.median(x))
     mad = float(np.median(np.abs(x - med)))
@@ -249,7 +323,7 @@ def cohort_stats(df: pd.DataFrame, feature_cols: list[str] | None = None,
         if name not in df.columns:
             continue
         med, mad = robust_stats(_transform(df[name].to_numpy(), name, params),
-                                params.trim_frac)
+                                params.trim_frac, params.min_cohort_n)
         out["features"][name] = {"median": med, "mad": mad}
     for name in mnames:
         if name not in df.columns:
@@ -382,6 +456,34 @@ def max_run(flags) -> int:
         cur = cur + 1 if f else 0
         best = max(best, cur)
     return best
+
+
+def flag_rollup(l3_df: pd.DataFrame, flags, group_cols: list[str] | None = None
+                ) -> pd.DataFrame:
+    """플래그를 시퀀스 단위로 롤업 — n_flagged, frac_flagged, max_run.
+
+    플래그를 정하는 것(임계값)은 사용자, 집계 연산만 여기서 한다.
+    `max_run`은 게이트가 아니라 **사유 코드 결정용**이다: 뭉쳐 있으면 국소
+    이미지 손상, 산발이면 락온 실패 쪽을 가리킨다.
+    """
+    fl = np.asarray(flags, dtype=bool)
+    if len(fl) != len(l3_df):
+        raise CdqcError("E-ARG-01", f"flags {len(fl)} vs l3_df {len(l3_df)}")
+    df = l3_df.assign(_flag=fl)
+
+    def agg(g: pd.DataFrame) -> dict:
+        f = g["_flag"].to_numpy(dtype=bool)
+        return {"n_cd": int(len(f)), "n_flagged": int(f.sum()),
+                "frac_flagged": float(f.mean()) if len(f) else np.nan,
+                "max_run": max_run(f)}
+
+    if group_cols is None:
+        return pd.DataFrame([agg(df)])
+    rows = []
+    for key, g in df.groupby(group_cols, sort=False):
+        key = key if isinstance(key, tuple) else (key,)
+        rows.append({**dict(zip(group_cols, key)), **agg(g)})
+    return pd.DataFrame(rows)
 
 
 # ================================================================ 평가 헬퍼
