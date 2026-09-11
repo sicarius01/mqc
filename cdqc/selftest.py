@@ -291,8 +291,16 @@ def run_selftest(sp: SynthParams | None = None,
     return "\n".join(lines), all_pass
 
 
-if __name__ == "__main__":
+def main():
     import sys
+    # Preserve the terminal's encoding while making report symbols printable
+    # on Windows consoles whose code page cannot represent every character.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="backslashreplace")
     report, ok = run_selftest()
     print(report)
-    sys.exit(0 if ok else 1)
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
