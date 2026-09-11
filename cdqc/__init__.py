@@ -33,7 +33,7 @@ from .validate import (INJECTIONS, category_summary, inject_coords,
 
 FEATURES = REGISTRY   # 피쳐 메타데이터 공개 별칭 (이름/worse_when/사유코드/설명)
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 __all__ = [
     "Params",

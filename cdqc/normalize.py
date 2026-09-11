@@ -85,6 +85,9 @@ def floor_stats(stats: dict, pooled: dict,
     "몇 % 변화"로 읽힌다.) `mad_floors[피쳐]`는 apply_z가 마지막에 한 번 더
     적용하므로 여기서는 다루지 않는다.
 
+    원형 피쳐(angle_median)는 각도 원점이 임의이므로 |중앙값| 상대 하한을
+    적용하지 않는다. 원형 MAD와 pooled/절대/피쳐별 하한은 그대로 적용한다.
+
     cohort_z가 내부에서 쓰는 것과 같은 연산이다 — 고정 통계를 저장했다가
     나중에 apply_z로 쓰는 경우(캘리브레이션 재사용, injection_test)에도 같은
     방어를 받도록 공개한다.
@@ -96,9 +99,12 @@ def floor_stats(stats: dict, pooled: dict,
     for name, st in stats.get("features", {}).items():
         pm = pooled_mad.get(name, np.nan)
         med, mad = st["median"], st["mad"]
+        # Angular zero is arbitrary: |median| cannot set a circular scale.
+        relative_center = (abs(med) if np.isfinite(med)
+                           and BY_NAME[name].period is None else 0.0)
         scale_floor = max(
             params.pooled_mad_frac * 1.4826 * (pm if np.isfinite(pm) else 0.0),
-            params.rel_scale_floor * (abs(med) if np.isfinite(med) else 0.0),
+            params.rel_scale_floor * relative_center,
             params.abs_scale_floor)
         mad_floor = scale_floor / 1.4826
         mad = mad_floor if not np.isfinite(mad) else max(float(mad), mad_floor)
@@ -145,6 +151,14 @@ def cohort_z(df: pd.DataFrame, group_cols: list[str] | None = None,
     저장해야 한다 (주입 케이스로 통계를 다시 내면 주입이 흡수된다).
     """
     params = params or Params()
+    if group_cols is not None:
+        missing = [name for name in group_cols if name not in df.columns]
+        if not group_cols or missing:
+            raise CdqcError("E-ARG-06", f"group_cols must name existing columns; missing={missing}")
+        null_counts = df[group_cols].isna().sum()
+        null_counts = {name: int(count) for name, count in null_counts.items() if count}
+        if null_counts:
+            raise CdqcError("E-ARG-06", f"cohort group keys contain missing values: {null_counts}")
     base = df if base_mask is None else df[np.asarray(base_mask, dtype=bool)]
     if len(base) == 0:
         raise CdqcError("E-ARG-04", "base_mask가 고른 행이 0개")

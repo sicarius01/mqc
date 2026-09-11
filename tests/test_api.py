@@ -137,6 +137,32 @@ def test_extract_l3_carries_midpoints(params):
     assert f["px_nm"].iloc[0] == 0.5
 
 
+def test_geometry_only_does_not_invent_image_evidence(params):
+    S = np.column_stack([np.zeros(12), np.arange(12) * 10.0])
+    E = S + [10.0, 0.0]
+    f = cdqc.extract_l3(None, S, E, 0.5, params=params)
+    z = cdqc.cohort_z(f, params=params)
+    for name in ("edge_valid_s", "edge_valid_e", "pol_s", "pol_e", "cnr_s", "delta_s"):
+        assert f[name].isna().all()
+        assert z[f"z_{name}"].isna().all()
+    aggregate = cdqc.aggregate_z(z)
+    assert (aggregate["z_max"] < 1e-8).all()
+    assert (aggregate["n_z_valid"] > 0).all()
+
+
+@pytest.mark.parametrize("values", [
+    pd.Series([True, False, pd.NA], dtype="boolean"),
+    pd.Series([1.0, 0.0, np.nan]),
+    pd.Series([True, False, None], dtype=object),
+])
+def test_boolean_evidence_preserves_missing_and_measured_failure(values):
+    df = pd.DataFrame({"edge_valid_s": values})
+    z = cdqc.apply_z(df, {})
+    np.testing.assert_allclose(z["z_edge_valid_s"], [0.0, cdqc.Z_ON_BAD, np.nan], equal_nan=True)
+    aggregate = cdqc.aggregate_z(z)
+    assert aggregate["n_z_valid"].tolist() == [1, 1, 0]
+
+
 def test_recall_at_fpr_hand_computed():
     good = np.arange(100, dtype=float)          # 0..99 → 95분위 = 94.05
     bad = np.array([50.0, 96.0, 98.0, np.nan])

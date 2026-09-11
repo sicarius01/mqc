@@ -7,7 +7,7 @@ kind:
     z        코호트 robust z로 정규화되는 연속 피쳐
     raw      계산·기록만 하고 정규화하지 않음 (z가 수학적으로 성립하지 않는
              원형 변수 등. 파생 피쳐의 입력으로 남긴다)
-    bool     유효성 플래그. False면 고정 z(Z_ON_BAD) 부여
+    bool     유효성 플래그. False면 고정 z(Z_ON_BAD), 미측정이면 NaN
     match    범주형. 코호트 최빈값과 불일치하면 고정 z(Z_ON_BAD) 부여
     physical 물리 단위(nm) 그대로 공차와 비교 (impact_nm)
     rollup   다른 레벨 결과의 집계 (정규화 안 함)
@@ -43,6 +43,7 @@ class Feature:
     g0: bool = False      # L1 중 G0 게이트 입력 여부
     enabled_default: bool = True   # enabled_* = "all"일 때 포함 여부
                                    # (계산·리포트는 되지만 플래그를 구동하지 않음)
+    period: float | None = None    # Circular z uses wrapped deviations in these units.
 
 
 _F = Feature
@@ -126,7 +127,7 @@ REGISTRY: list[Feature] = [
     _F("bdist_median_s", "l2", "z", "high", "S 라벨 경계 거리 중앙값(nm) — 시퀀스 전체가 경계에서 이탈", g2=True),
     _F("bdist_median_e", "l2", "z", "high", "E 라벨 경계 거리 중앙값(nm)", g2=True),
     # ---- L2 총체적 실패 (시퀀스 전체가 다른 모양 — 변경 #03 §2) -------------
-    _F("angle_median", "l2", "z", "both", "세그먼트 각도의 원형 중앙값(deg, 180° 주기) — 기준 각도 오설정. 코호트가 ±90° 랩 경계 근처면 주의", g2=True),
+    _F("angle_median", "l2", "z", "both", "세그먼트 각도의 원형 중앙값(deg, 180° 주기) — 코호트 중심과의 최단 각도 차이로 정규화", g2=True, period=180.0),
     _F("angle_spread", "l2", "z", "high", "각도의 원형 MAD(deg) — 방향이 뒤죽박죽인 시퀀스", g2=True),
     _F("pitch_median", "l2", "z", "both", "이웃 CD 중점 간 거리 중앙값(nm) — 측정 간격 설정 오류", g2=True),
     _F("span_nm", "l2", "z", "both", "첫/끝 CD 중점 간 거리(nm) — ROI 길이가 다름", g2=True),

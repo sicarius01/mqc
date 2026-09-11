@@ -61,8 +61,9 @@ def l3_sequence_features(img: np.ndarray | None, S: np.ndarray, E: np.ndarray,
     if img is None:
         for name in ev_names:
             out[name] = np.full(n, np.nan)
-        out["edge_valid_s"] = np.zeros(n, dtype=bool)
-        out["edge_valid_e"] = np.zeros(n, dtype=bool)
+        # Unavailable evidence is not a measured, invalid edge.
+        out["edge_valid_s"] = np.full(n, np.nan)
+        out["edge_valid_e"] = np.full(n, np.nan)
         return out
 
     profiles = sample_ribbon_profiles(img, S, E, ribbon_t, cfg["sampling"])

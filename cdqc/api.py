@@ -290,6 +290,43 @@ def _transform(x: np.ndarray, name: str, params: Params) -> np.ndarray:
     return np.asarray(x, dtype=np.float64)
 
 
+def _wrapped_difference(x, center: float, period: float) -> np.ndarray:
+    return (np.asarray(x, dtype=np.float64) - center + period / 2) % period - period / 2
+
+
+def _circular_stats(x, period: float, trim_frac: float, min_n: int
+                    ) -> tuple[float, float]:
+    """Robust center/MAD on a circle, independent of the angular origin.
+
+    Use the resultant direction only to choose an unwrap cut, then use a
+    median and wrapped absolute deviations. Component-wise sin/cos medians
+    are not rotation equivariant. For a zero resultant the first observation
+    supplies a deterministic cut; diffuse cohorts have no unique direction.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    x = x[np.isfinite(x)]
+    if len(x) < max(1, int(min_n)):
+        return np.nan, np.nan
+
+    def fit(values):
+        phase = values * (2 * np.pi / period)
+        resultant = np.mean(np.exp(1j * phase))
+        anchor = (float(np.angle(resultant) * period / (2 * np.pi))
+                  if abs(resultant) > 1e-12 else float(values[0]))
+        center = anchor + float(np.median(_wrapped_difference(values, anchor, period)))
+        center = float(_wrapped_difference(center, 0.0, period))
+        mad = float(np.median(np.abs(_wrapped_difference(values, center, period))))
+        return center, mad
+
+    med, mad = fit(x)
+    if trim_frac > 0 and len(x) >= 10:
+        deviation = np.abs(_wrapped_difference(x, med, period))
+        keep = deviation <= np.quantile(deviation, 1 - trim_frac)
+        if keep.sum() >= max(3, int(min_n)):
+            med, mad = fit(x[keep])
+    return med, mad
+
+
 def _mode_pm1(x: np.ndarray) -> float:
     x = np.asarray(x, dtype=np.float64)
     x = x[np.isfinite(x) & (x != 0)]
@@ -322,8 +359,13 @@ def cohort_stats(df: pd.DataFrame, feature_cols: list[str] | None = None,
     for name in znames:
         if name not in df.columns:
             continue
-        med, mad = robust_stats(_transform(df[name].to_numpy(), name, params),
-                                params.trim_frac, params.min_cohort_n)
+        period = BY_NAME[name].period
+        if period is not None:
+            med, mad = _circular_stats(df[name].to_numpy(), period,
+                                      params.trim_frac, params.min_cohort_n)
+        else:
+            med, mad = robust_stats(_transform(df[name].to_numpy(), name, params),
+                                    params.trim_frac, params.min_cohort_n)
         out["features"][name] = {"median": med, "mad": mad}
     for name in mnames:
         if name not in df.columns:
@@ -338,7 +380,7 @@ def apply_z(df: pd.DataFrame, stats: dict,
 
     - z 계열: (x − median) / max(1.4826·MAD, mad_floor), log 피쳐는 변환 후.
       방향: low → −z, high → +z, both → |z| (zs_에 부호 보존).
-    - bool 계열(edge_valid_*): False면 고정 z=Z_ON_BAD.
+    - bool 계열(edge_valid_*): False면 고정 z=Z_ON_BAD, 미측정이면 NaN.
     - match 계열(pol_*): stats["modes"] 최빈값과 불일치면 고정 z=Z_ON_BAD.
     원본 df는 수정하지 않는다 (복사본 반환).
     """
@@ -347,24 +389,31 @@ def apply_z(df: pd.DataFrame, stats: dict,
     for name, st in stats.get("features", {}).items():
         if name not in df.columns:
             continue
-        x = _transform(df[name].to_numpy(), name, params)
+        period = BY_NAME[name].period
+        x = (df[name].to_numpy(dtype=np.float64) if period is not None
+             else _transform(df[name].to_numpy(), name, params))
         mad = st["mad"]
         scale = max(1.4826 * (mad if np.isfinite(mad) else np.nan),
                     params.mad_floor(name))
-        z = (x - st["median"]) / scale
+        delta = (_wrapped_difference(x, st["median"], period) if period is not None
+                 else x - st["median"])
+        z = delta / scale
         ww = _worse_when(params, name)
         out[f"z_{name}"] = np.abs(z) if ww == "both" else (-z if ww == "low" else z)
         if ww == "both":
             out[f"zs_{name}"] = z
     for f in REGISTRY:
         if f.kind == "bool" and f.name in df.columns:
-            ok = df[f.name].to_numpy().astype(bool)
-            out[f"z_{f.name}"] = np.where(ok, 0.0, Z_ON_BAD)
+            measured = df[f.name].notna().to_numpy()
+            z = np.full(len(df), np.nan)
+            ok = df.loc[measured, f.name].to_numpy().astype(bool)
+            z[measured] = np.where(ok, 0.0, Z_ON_BAD)
+            out[f"z_{f.name}"] = z
         elif f.kind == "match" and f.name in df.columns:
             mode = stats.get("modes", {}).get(f.name, 0.0)
-            v = df[f.name].to_numpy(dtype=np.float64)
+            v = df[f.name].to_numpy(dtype=np.float64, na_value=np.nan)
             bad = (mode != 0.0) & np.isfinite(v) & (v != 0) & (v != mode)
-            out[f"z_{f.name}"] = np.where(bad, Z_ON_BAD, 0.0)
+            out[f"z_{f.name}"] = np.where(np.isfinite(v), np.where(bad, Z_ON_BAD, 0.0), np.nan)
     return out
 
 

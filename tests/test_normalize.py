@@ -145,3 +145,60 @@ def test_cohort_z_preserves_row_order_with_duplicate_index(params):
     assert z["mark"].tolist() == df["mark"].tolist()   # 행 순서 보존
     assert z.index.tolist() == df.index.tolist()
     assert np.allclose(z["cnr_s"], df["cnr_s"])
+
+
+def test_angle_constant_reference_wraps_and_frozen_stats_roundtrip(params):
+    import json
+
+    df = pd.DataFrame({"category_id": ["A"] * 7,
+                       "angle_median": [89.9] * 6 + [-89.9]})
+    z, stats = cdqc.cohort_z(df, ["category_id"], base_mask=np.arange(7) < 6,
+                            params=params, return_stats=True)
+    frozen = json.loads(json.dumps(next(iter(stats.values()))))
+    assert frozen["features"]["angle_median"]["median"] == pytest.approx(89.9)
+    assert z["zs_angle_median"].iloc[-1] == pytest.approx(0.2 / params.mad_floor("angle_median"))
+    np.testing.assert_allclose(z["z_angle_median"].iloc[:6], 0.0, atol=1e-10)
+    replay = cdqc.apply_z(df, frozen, params)
+    np.testing.assert_allclose(replay["zs_angle_median"], z["zs_angle_median"], atol=1e-10)
+
+
+@pytest.mark.parametrize("rotation", [-179.7, -88.1, 13.2, 90.0, 180.0])
+def test_angle_cohort_scores_are_invariant_to_global_rotation(rotation, params):
+    angles = np.array([89.0, 89.5, 89.9, -89.9, -89.6, -89.2] * 3 + [-88.4])
+    base_mask = np.arange(len(angles)) < len(angles) - 1
+
+    def calculate(a):
+        frame = pd.DataFrame({"angle_median": a})
+        return cdqc.cohort_z(frame, base_mask=base_mask, params=params, return_stats=True)
+
+    expected, reference = calculate(angles)
+    actual, rotated = calculate((angles + rotation + 90) % 180 - 90)
+    np.testing.assert_allclose(actual["zs_angle_median"], expected["zs_angle_median"], atol=1e-10)
+    assert rotated[None]["features"]["angle_median"]["mad"] == pytest.approx(
+        reference[None]["features"]["angle_median"]["mad"])
+
+
+def test_angle_constant_cohort_floor_is_rotation_invariant(params):
+    def score(center):
+        frame = pd.DataFrame({"angle_median": [center] * 6 + [center + 0.2]})
+        return cdqc.cohort_z(frame, base_mask=np.arange(7) < 6, params=params)["z_angle_median"]
+
+    np.testing.assert_allclose(score(0.0), score(89.9), atol=1e-10)
+
+
+@pytest.mark.parametrize("group_cols", [["category_id"], ["recipe_id", "category_id"]])
+@pytest.mark.parametrize("missing", [None, np.nan, pd.NA])
+def test_cohort_z_rejects_missing_group_keys_with_diagnostic(group_cols, missing):
+    df = pd.DataFrame({"category_id": ["A"] * 6 + [missing],
+                       "recipe_id": ["R"] * 7, "cd_nm": [10.0] * 7})
+    # Reject evaluation rows too, even when the baseline excludes them.
+    with pytest.raises(cdqc.CdqcError, match="category_id") as error:
+        cdqc.cohort_z(df, group_cols, base_mask=np.arange(7) < 6)
+    assert error.value.code == "E-ARG-06"
+
+
+@pytest.mark.parametrize("group_cols", [[], ["missing_column"]])
+def test_cohort_z_rejects_invalid_group_columns(group_cols):
+    with pytest.raises(cdqc.CdqcError) as error:
+        cdqc.cohort_z(pd.DataFrame({"cd_nm": [10.0] * 6}), group_cols)
+    assert error.value.code == "E-ARG-06"
