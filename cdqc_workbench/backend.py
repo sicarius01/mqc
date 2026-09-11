@@ -19,6 +19,7 @@ import pandas as pd
 from scipy.ndimage import gaussian_filter1d
 
 import cdqc
+from cdqc import func as nasca_io
 from cdqc.geometry import mean_edge_tangent, unit_tangents
 from cdqc.sampling import DS, sample_ribbon_profiles
 from cdqc.evidence import gradient_of
@@ -99,17 +100,16 @@ def _issue(code, message, image_id='', severity='warning', **extra):
 
 
 def read_table(source, filename=None) -> pd.DataFrame:
-    """Read UTF-8/CP949 CSV or XLSX. Bytes require an explicit filename."""
+    """Read CSV bytes/paths or original workbook paths through Excel COM."""
     filename = filename or (str(source) if not isinstance(source, bytes) else '')
     suffix = Path(filename).suffix.lower()
-    raw = source if isinstance(source, bytes) else Path(source).read_bytes()
-    if suffix in ('.xlsx', '.xlsm'):
-        try:
-            return pd.read_excel(BytesIO(raw), engine='openpyxl')
-        except ImportError as exc:
-            raise ValueError('XLSX 읽기에는 openpyxl이 필요합니다. GUI 의존성을 설치하세요.') from exc
+    if suffix in ('.xlsx', '.xlsm', '.xls', '.xlsb'):
+        if isinstance(source, (bytes, bytearray, memoryview)):
+            raise ValueError('Excel COM은 원본 파일 경로가 필요합니다. XLSX 바이트 대신 디렉토리의 원본 경로를 사용하세요.')
+        return nasca_io.read_nasca_csv(source, visible=False, header=True)
     if suffix not in ('.csv', '.tsv', '.txt'):
         raise ValueError('측정 표는 CSV, TSV 또는 XLSX 형식이어야 합니다.')
+    raw = source if isinstance(source, bytes) else Path(source).read_bytes()
     for encoding in ('utf-8-sig', 'cp949'):
         try:
             return pd.read_csv(BytesIO(raw), encoding=encoding,
@@ -192,9 +192,20 @@ def load_dataset(image_path, table_path, seg_path=None, dm3_path=None,
         raise ValueError('nm/px는 0보다 큰 유한한 값이어야 합니다.')
 
     table = read_table(table_path)
+    metadata['table_reader'] = table.attrs.get('table_reader', 'pandas CSV')
+    metadata['table_source'] = dict(table.attrs)
     if table.empty:
         raise ValueError('측정 표에 데이터 행이 없습니다.')
+    # Excel UsedRange can include formatting-only trailing columns. Keep every
+    # named column and every populated column, even if its header is missing.
+    keep_columns = [not ((pd.isna(name) or (isinstance(name, str) and not name.strip()))
+                         and table.iloc[:, index].isna().all())
+                    for index, name in enumerate(table.columns)]
+    table = table.iloc[:, keep_columns].copy()
     table.columns = table.columns.map(str)
+    if table.columns.duplicated().any():
+        duplicates = table.columns[table.columns.duplicated()].unique().tolist()
+        raise ValueError(f'측정 표에 중복 컬럼명이 있습니다: {duplicates}. Excel 첫 사용 행의 헤더를 확인하세요.')
     mapping = dict(options.get('mapping') or {})
     for target, aliases in ALIASES.items():
         if target not in mapping or not mapping[target]:
@@ -203,7 +214,7 @@ def load_dataset(image_path, table_path, seg_path=None, dm3_path=None,
         if mapping.get(name) not in table:
             raise ValueError(f'{name} 컬럼을 지정하세요. 사용 가능 컬럼: {list(table.columns)}')
     rec = table.copy()
-    rec['source_row'] = np.arange(len(rec)) + 2  # spreadsheet/CSV header is row 1
+    rec['source_row'] = np.arange(len(rec)) + int(table.attrs.get('source_data_start_row', 2))
     for name in ('sx', 'sy', 'ex', 'ey'):
         rec[name] = pd.to_numeric(table[mapping[name]], errors='coerce')
         rec['raw_' + name] = rec[name]

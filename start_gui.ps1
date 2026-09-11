@@ -10,7 +10,7 @@ if (-not $Python) {
     if (Test-Path -LiteralPath $venvPython) { $Python = $venvPython }
     else { $Python = "python" }
 }
-& $Python -c "import cdqc, streamlit, plotly, openpyxl, ncempy"
+& $Python -c "import cdqc, streamlit, plotly, win32com.client, pythoncom, ncempy"
 if ($LASTEXITCODE -ne 0) {
     Write-Host "GUI dependencies are missing. Run:" -ForegroundColor Yellow
     Write-Host "  $Python -m pip install -r requirements-gui.txt"

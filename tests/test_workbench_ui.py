@@ -174,3 +174,65 @@ def test_missing_role_cells_mean_empty_suffix_and_same_directory():
     from cdqc_workbench.app import role_config_from_frame
     data = pd.DataFrame([dict(role="table", directory=None, extension="xlsx", suffix=np.nan)])
     assert role_config_from_frame(data) == {"table": {"directory": None, "extension": "xlsx", "suffix": ""}}
+
+
+def test_failed_analysis_preserves_complete_success_snapshot(app):
+    """A failed attempt must not relabel an old result with new input paths."""
+    from copy import deepcopy
+    app.button(key="demo_run").click().run()
+    app.session_state["run_manifest"] = [{"image_id": "previous-input", "table_path": "previous.xlsx"}]
+    app.session_state["run_scan_config"] = {"root": "previous-root"}
+    app.session_state["load_issues"] = [{"image_id": "previous-excluded", "message": "previous error"}]
+    before = {key: deepcopy(app.session_state[key]) for key in
+              ("run_config", "run_manifest", "run_scan_config", "load_issues", "run_count")}
+    run_id = app.session_state["analysis"].run_id
+    app.text_area(key="params_json").set_value('{"win_min_px":100,"win_max_px":1}').run()
+    app.button(key="analyze_run").click().run()
+    assert not list(app.exception)
+    assert app.session_state["analysis"].run_id == run_id
+    for key, value in before.items():
+        assert app.session_state[key] == value, key
+    failed = app.session_state["failed_attempt"]
+    assert "win_min_px" in failed["error"]
+    assert failed["manifest"] == []
+    assert failed["load_issues"] == []
+    assert any("실패한 최근 시도" in item.value for item in app.warning)
+
+
+@pytest.mark.parametrize("replacement", [None, b"{invalid-json"])
+def test_removed_or_invalid_reference_upload_cannot_reuse_previous(app, monkeypatch, replacement):
+    """AppTest lacks file-upload input; replace only that widget's return value."""
+    from io import BytesIO
+    import streamlit as st
+    app.button(key="demo_run").click().run()
+    content = [be.export_stats(app.session_state["analysis"]).encode("utf-8")]
+    original = st.file_uploader
+
+    def uploaded(*args, **kwargs):
+        if kwargs.get("key") == "stats_upload":
+            return None if content[0] is None else BytesIO(content[0])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(st, "file_uploader", uploaded)
+    app.radio[0].set_value(app.radio[0].options[2]).run()
+    app.button(key="analyze_run").click().run()
+    clean(app)
+    assert app.session_state["frozen_stats"] is not None
+    run_id = app.session_state["analysis"].run_id
+    count = app.session_state["run_count"]
+    content[0] = replacement
+    app.run()
+    assert app.session_state["frozen_stats"] is None
+    app.button(key="analyze_run").click().run()
+    assert not list(app.exception)
+    assert app.session_state["analysis"].run_id == run_id
+    assert app.session_state["run_count"] == count
+    assert "먼저 불러오세요" in app.session_state["failed_attempt"]["error"]
+
+
+def test_reference_cache_cleared_outside_uploaded_reference_mode(app):
+    app.button(key="demo_run").click().run()
+    app.session_state["frozen_stats"] = be.import_stats(be.export_stats(app.session_state["analysis"]))
+    app.run()  # Default exploratory mode, without an active upload.
+    clean(app)
+    assert app.session_state["frozen_stats"] is None

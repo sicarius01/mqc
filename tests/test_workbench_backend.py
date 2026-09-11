@@ -45,13 +45,76 @@ def test_unicode_real_tiff_csv_and_missing_seg(tmp_path):
     np.testing.assert_allclose(result.l3.cd_nm, 12.5)
 
 
-def test_read_xlsx_and_bytes(tmp_path):
-    pytest.importorskip('openpyxl')
+def test_read_xlsx_uses_nasca_com_original_path(tmp_path, monkeypatch):
+    from cdqc import func
+    from unittest.mock import Mock
     original = pd.DataFrame({'category': ['한글'], 'sx': [12]})
     path = tmp_path / '측정.xlsx'
-    original.to_excel(path, index=False)
+    reader = Mock(return_value=original)
+    monkeypatch.setattr(func, 'read_nasca_csv', reader)
+    monkeypatch.setattr(type(path), 'read_bytes', Mock(side_effect=AssertionError('no direct workbook bytes')))
+    monkeypatch.setattr(pd, 'read_excel', Mock(side_effect=AssertionError('no openpyxl fallback')))
     pd.testing.assert_frame_equal(read_table(path), original)
-    pd.testing.assert_frame_equal(read_table(path.read_bytes(), '측정.xlsx'), original)
+    reader.assert_called_once_with(path, visible=False, header=True)
+    with pytest.raises(ValueError, match='원본 파일 경로'):
+        read_table(b'protected data', '측정.xlsx')
+
+
+def test_excel_source_row_and_reader_diagnostics(tmp_path, monkeypatch):
+    from cdqc import func
+    image, csv = files(tmp_path)
+    table = pd.read_csv(csv, encoding='cp949')
+    table.attrs.update(source_data_start_row=5, sheet_name='NASCA', table_reader='Excel COM')
+    monkeypatch.setattr(func, 'read_nasca_csv', lambda *args, **kwargs: table)
+    result = load_dataset(image, tmp_path / '측정.xlsx', px_nm=.5)
+    assert result.records.source_row.tolist() == [5, 6, 7, 8, 9, 10]
+    assert result.metadata['table_reader'] == 'Excel COM'
+    assert result.metadata['table_source']['sheet_name'] == 'NASCA'
+
+
+def test_csv_bytes_still_supported():
+    result = read_table('category,sx\n폭,12\n'.encode('cp949'), '측정.csv')
+    pd.testing.assert_frame_equal(result, pd.DataFrame({'category': ['폭'], 'sx': [12]}))
+
+
+def test_duplicate_excel_headers_report_ambiguous_mapping(tmp_path, monkeypatch):
+    from cdqc import func
+    image, csv = files(tmp_path)
+    table = pd.read_csv(csv, encoding='cp949')
+    table.columns = ['sx', 'sy', 'ex', 'ey', 'category', 'sx']
+    monkeypatch.setattr(func, 'read_nasca_csv', lambda *args, **kwargs: table)
+    with pytest.raises(ValueError, match='중복 컬럼명'):
+        load_dataset(image, tmp_path / '측정.xlsx', px_nm=.5)
+
+
+def test_empty_unnamed_excel_formatting_columns_do_not_block_data(tmp_path, monkeypatch):
+    from cdqc import func
+    image, csv = files(tmp_path)
+    table = pd.read_csv(csv, encoding='cp949')
+    columns = list(table.columns)
+    for name in ('blank_a', 'blank_b', 'blank_c', 'blank_d'):
+        table[name] = None
+    table.columns = columns + [None, None, '', '  ']
+    table.attrs.update(source_data_start_row=5, sheet_name='NASCA')
+    monkeypatch.setattr(func, 'read_nasca_csv', lambda *args, **kwargs: table)
+    result = load_dataset(image, tmp_path / '측정.xlsx', px_nm=.5)
+    assert result.records.analysis_valid.all()
+    assert result.records.source_row.tolist() == [5, 6, 7, 8, 9, 10]
+    assert not any(name in result.records for name in ('None', 'nan', '', '  '))
+    # The raw reader frame remains unchanged for source-data diagnostics.
+    assert len(table.columns) == len(columns) + 4
+
+
+def test_populated_unnamed_excel_columns_are_preserved(tmp_path, monkeypatch):
+    from cdqc import func
+    image, csv = files(tmp_path)
+    table = pd.read_csv(csv, encoding='cp949')
+    table[None] = ['raw extra'] * len(table)
+    table['empty_but_named'] = None
+    monkeypatch.setattr(func, 'read_nasca_csv', lambda *args, **kwargs: table)
+    result = load_dataset(image, tmp_path / '측정.xlsx', px_nm=.5)
+    assert result.records[str(table.columns[6])].tolist() == ['raw extra'] * len(table)
+    assert 'empty_but_named' in result.records
 
 
 def test_old_meters_columns_and_pixel_origin(tmp_path):

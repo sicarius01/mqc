@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from copy import deepcopy
 import json
 from pathlib import Path
 import traceback
@@ -88,6 +89,7 @@ def init_state():
 def configure():
     st.subheader("D0 · 폴더를 지정하고 파일 연결 규칙을 확인하세요")
     st.caption("하위 폴더까지 찾은 뒤 같은 측정 묶음의 TIF · 측정표 · 세그멘테이션 PNG · DM3를 연결합니다. 규칙은 이 화면에서 바꾸고 저장할 수 있습니다.")
+    st.caption("XLSX는 이 PC의 Microsoft Excel을 창 없이 실행해 읽습니다 (read_nasca_csv). Excel 설치가 필요합니다.")
     if st.session_state.get("startup_error"):
         st.warning("저장 설정을 읽지 못해 기본값을 사용합니다: " + st.session_state.startup_error)
     cfg = dict(st.session_state.config)
@@ -246,6 +248,8 @@ def analysis_settings(ids):
         chosen = st.multiselect("정상 기준 이미지 ID", ids, default=[], disabled=mode != "선택한 정상 이미지")
         st.caption("입력 전체 기준은 배치 구성이 바뀌면 점수도 달라집니다. 고정 정상 기준으로 비교하려면 정상 이미지를 선택해 기준 JSON을 저장하세요.")
         upload = st.file_uploader("기준 통계 JSON", type="json", key="stats_upload", disabled=mode != "저장한 기준 JSON")
+        # The active upload owns the reference; never reuse a removed file's cache.
+        st.session_state.frozen_stats = None
         if upload is not None and mode == "저장한 기준 JSON":
             try:
                 st.session_state.frozen_stats = be.import_stats(upload.getvalue().decode("utf-8-sig"))
@@ -262,6 +266,11 @@ def analysis_settings(ids):
 
 
 def run_analysis(cfg, matches, mode, chosen, *, demo=False):
+    load_issues = []
+    manifest = ([] if demo or matches.empty else
+                matches[matches.enabled.fillna(False).astype(bool)].to_dict("records"))
+    attempt = {"config": deepcopy(cfg), "manifest": deepcopy(manifest), "mode": mode,
+               "params_json": st.session_state.params_json, "load_issues": load_issues}
     try:
         params = be.validate_params(json.loads(st.session_state.params_json))
         frozen = st.session_state.frozen_stats if mode == "저장한 기준 JSON" else None
@@ -269,12 +278,10 @@ def run_analysis(cfg, matches, mode, chosen, *, demo=False):
             raise ValueError("저장한 기준 JSON을 먼저 불러오세요.")
         if mode == "선택한 정상 이미지" and not chosen:
             raise ValueError("정상 기준 이미지를 하나 이상 선택하세요.")
-        datasets, load_issues = [], []
+        datasets = []
         with st.status("분석 실행 중", expanded=True) as status:
             if demo:
                 datasets = be.demo_datasets()
-                st.session_state.scan_attempted = False
-                st.session_state.run_manifest = []
                 st.write(f"합성 데모 {len(datasets)}개 이미지 준비")
             elif not matches.empty:
                 rows = matches[matches.enabled.fillna(False).astype(bool)]
@@ -298,7 +305,6 @@ def run_analysis(cfg, matches, mode, chosen, *, demo=False):
                 if not datasets or not all(d.metadata.get("demo") for d in datasets):
                     raise ValueError("실제 데이터는 새 연결 결과에서 분석 포함을 선택하세요. 이전 데이터로 자동 대체하지 않습니다.")
             if not datasets:
-                st.session_state.load_issues = load_issues
                 raise ValueError("분석 가능한 데이터가 없습니다. 연결 결과와 로딩 오류를 확인하세요.")
             st.write("L3 개별 CD → L2 시퀀스 → L1 이미지 특징 및 기준 대비 점수 계산")
             analysis_progress = st.progress(0.0)
@@ -308,17 +314,22 @@ def run_analysis(cfg, matches, mode, chosen, *, demo=False):
                 analysis_progress.progress(min(1.0, current / max(total, 1)))
             result = be.analyze(datasets, params=params, baseline_ids=chosen if mode == "선택한 정상 이미지" else None,
                                 frozen_stats=frozen, progress=report)
-            st.session_state.datasets = datasets
-            st.session_state.analysis = result
-            st.session_state.load_issues = load_issues
-            st.session_state.run_count += 1
-            st.session_state.run_config = {"source": "synthetic_demo"} if all(d.metadata.get("demo") for d in datasets) else cfg
-            st.session_state.run_mode = mode
-            st.session_state.last_error = ""
+            synthetic = all(d.metadata.get("demo") for d in datasets)
+            # Commit the result and its provenance together, only after success.
+            st.session_state.update(datasets=datasets, analysis=result,
+                load_issues=load_issues, run_count=st.session_state.run_count + 1,
+                run_config={"source": "synthetic_demo"} if synthetic else deepcopy(cfg),
+                run_manifest=deepcopy(manifest),
+                run_scan_config={} if synthetic else deepcopy(st.session_state.get("scanned_config", {})),
+                run_mode=mode, last_error="", failed_attempt=None)
+            if demo:
+                st.session_state.scan_attempted = False
             for key in ("selected_image", "selected_category", "selected_cd"):
                 st.session_state.pop(key, None)
             status.update(label=f"분석 완료 · 이미지 {len(datasets)}개 · 로딩 실패 {len(load_issues)}개", state="complete", expanded=False)
     except Exception as exc:
+        attempt["error"] = f"{type(exc).__name__}: {exc}"
+        st.session_state.failed_attempt = attempt
         issue_error(exc, "분석 실패 · 이전 성공 결과는 유지됩니다")
 
 
@@ -573,8 +584,11 @@ def feedback(result):
         table(st.session_state.get("load_issues", []))
         st.json({"params": asdict(result.params) if isinstance(result.params, Params) else result.params,
                  "config": st.session_state.get("run_config", {}),
-                 "scan_config": st.session_state.get("scanned_config", {}),
+                 "scan_config": st.session_state.get("run_scan_config", {}),
                  "effective_manifest": st.session_state.get("run_manifest", [])}, expanded=False)
+        if st.session_state.get("failed_attempt"):
+            st.warning("아래는 실패한 최근 시도입니다. 위의 성공 결과와 입력 정보는 유지됩니다.")
+            st.json(st.session_state.failed_attempt, expanded=False)
         if st.session_state.get("last_error"):
             st.code(st.session_state.last_error)
     with st.expander("로컬 결과 내보내기 · 전체 식별자와 수치 포함"):
@@ -634,13 +648,15 @@ def main():
     if demo:
         run_analysis(cfg or ds.default_config(), pd.DataFrame(), "탐색: 입력 전체", [], demo=True)
     elif (run or auto) and cfg is not None:
-        st.session_state.run_manifest = matches.to_dict("records") if not matches.empty else []
         run_analysis(cfg, matches, mode, chosen)
     result = st.session_state.analysis
     if result is None:
         st.info("처음이라면 왼쪽 ‘합성 데모 바로 분석’으로 모든 화면을 먼저 확인하세요. 실제 데이터는 D0에서 루트 폴더 하나를 지정합니다.")
         if st.session_state.get("load_issues"):
             table(st.session_state.load_issues)
+        if st.session_state.get("failed_attempt"):
+            st.markdown("**실패한 분석 시도 · 입력 및 로딩 진단**")
+            st.json(st.session_state.failed_attempt, expanded=False)
         return
     if result.l3.empty:
         st.warning("분석 결과에 CD 행이 없습니다.")

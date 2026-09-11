@@ -61,6 +61,7 @@ def _import_cdqc():
 
 
 cdqc = _import_cdqc()
+from cdqc import func as nasca_io                              # noqa: E402
 
 try:
     import ncempy.io.dm as dm
@@ -120,7 +121,7 @@ def load_one(dm3, tif, seg_png, xlsx):
             if labelmap.shape != img.shape:
                 labelmap = None                 # 해상도 불일치 → 라벨 경로 포기
 
-    return img, labelmap, pd.read_excel(xlsx), px_nm
+    return img, labelmap, nasca_io.read_nasca_csv(xlsx, visible=False, header=True), px_nm
 
 
 def meters_to_px(P_m, px_nm, W, H):

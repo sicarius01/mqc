@@ -1,6 +1,6 @@
 # cdqc — TEM CD 측정 품질 판정용 연산 라이브러리
 
-**v0.6.0: 폴더 기반 진단 GUI가 추가됐다.** 루트 디렉토리와 파일 매칭 규칙을 저장하면
+**v0.6.1: 폴더 기반 진단 GUI와 NASCA Excel 로더.** 루트 디렉토리와 파일 매칭 규칙을 저장하면
 하위 폴더에서 DM3·TIF·세그멘테이션 PNG·측정 XLSX를 찾아 일괄 분석한다.
 이미지 오버레이, CD별 피쳐·점수·프로파일, 분포, 정상 기준 통계, 입력 문제를 화면에서 확인한다.
 설치·실행·규칙 설정은 [GUI 사용 안내](GUI_GUIDE.md)를 참조한다.
@@ -11,6 +11,10 @@
 ```
 
 GUI는 `cdqc_workbench` 패키지에 있고, 아래 `cdqc` 라이브러리의 순수 연산 API는 유지한다.
+NASCA XLSX 읽기는 `cdqc.func.read_nasca_csv`가 Windows에 설치된 Excel을
+`win32com.client.DispatchEx("Excel.Application")`로 별도 실행해 처리한다.
+창은 기본적으로 숨기고, 읽은 값을 DataFrame으로 반환한 뒤 통합문서와 해당 Excel을 종료한다.
+XLSX 입력에는 **Windows용 Microsoft Excel과 pywin32**가 필요하며, pandas/openpyxl 직접 읽기로 대체하지 않는다.
 
 DL 세그멘테이션 레시피가 뽑은 CD 측정값 `(sx, sy, ex, ey)`의 품질 판정에
 필요한 **연산만** 제공하는 순수 함수 라이브러리다. 피쳐 추출(CD/시퀀스/이미지),
@@ -41,7 +45,7 @@ pip install -e .
 - venv를 쓰는 경우: `python -m venv .venv` → `.venv\Scripts\activate` → 위와 동일.
 - 의존성(numpy, scipy, pandas, opencv-python-headless — 4개, 버전 핀)은
   `pip install -e .` 가 pyproject.toml을 보고 같이 설치한다.
-- 확인: `python -c "import cdqc; print(cdqc.__version__)"` → `0.6.0`
+- 확인: `python -c "import cdqc; print(cdqc.__version__)"` → `0.6.1`
 
 ## 입력 계약
 

@@ -15,6 +15,11 @@ delta, 코호트 z 편의층(pooled 폴백·z 상한·상위 k 집계), 주입/�
 
 ### v0.6 입력·통계 및 GUI 계약
 
+- v0.6.1: NASCA XLSX 입력은 `cdqc.func.read_nasca_csv(path, visible=False, header=True)`를 사용한다.
+  이 함수만 명시적인 파일 I/O 어댑터로 제공하며, 핵심 피쳐·정규화 API의 순수 연산 계약은 유지한다.
+  `DispatchEx("Excel.Application")`로 별도 Excel을 창 없이 실행해 원본 경로를 읽고 DataFrame을 반환한다.
+  GUI와 배치 스크립트의 XLSX 로딩은 이 경로로 통일한다.
+
 - `extract_l3(img=None)`의 `edge_valid_s/e`는 미측정 NaN이다. `apply_z`는
   결측 bool/match 피쳐를 NaN으로 유지하고 실제 False만 고정 이상 점수로 계산한다.
 - L2 `angle_median`의 코호트 중심/MAD와 편차는 180도 주기로 계산한다.
