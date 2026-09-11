@@ -8,8 +8,7 @@ def main():
     app = Path(__file__).with_name("app.py")
     command = [sys.executable, "-m", "streamlit", "run", str(app),
                "--server.address", "127.0.0.1",
-               "--browser.gatherUsageStats", "false",
-               "--client.showErrorLinks", "false", *sys.argv[1:]]
+               "--browser.gatherUsageStats", "false", *sys.argv[1:]]
     try:
         return subprocess.call(command)
     except KeyboardInterrupt:

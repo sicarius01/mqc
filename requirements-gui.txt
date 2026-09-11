@@ -1,5 +1,5 @@
 -r requirements.txt
-streamlit==1.63.0
-plotly==7.0.0
-pywin32==312; sys_platform == "win32"
-ncempy==1.16
+streamlit>=1.41.1,<2
+plotly>=5.24.1,<8
+pywin32>=308,<313; sys_platform == "win32"
+ncempy>=1.13.1,<2

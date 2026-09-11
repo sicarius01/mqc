@@ -61,13 +61,15 @@ def table(value, *, key=None, height=350):
     for col in [c for c in show if pd.api.types.is_object_dtype(show[c].dtype)]:
         show[col] = show[col].map(lambda x: "NaN · 미산출" if x is None or (np.isscalar(x) and pd.isna(x))
                                   else json_text(x) if isinstance(x, (dict, list, tuple)) else str(x))
-    st.dataframe(show, width="stretch", height=height, hide_index=True, key=key)
+    st.dataframe(show, use_container_width=True, height=height, hide_index=True, key=key)
 
 
 def issue_error(exc, context):
     st.error(f"{context}: {type(exc).__name__}: {exc}")
     st.session_state["last_error"] = f"{context}\n{traceback.format_exc()}"
-    with st.expander("오류 상세 · 로컬 진단용"):
+    # A container also works when this error is reported inside an expander.
+    with st.container(border=True):
+        st.caption("오류 상세 · 로컬 진단용")
         st.code(st.session_state.last_error)
 
 
@@ -102,7 +104,7 @@ def configure():
                                "extension": settings.get("extension", ""), "suffix": settings.get("suffix", "")}
                               for role, settings in roles.items()])
     st.markdown("**파일 종류별 규칙** · 각 측정 폴더에서 아래 규칙으로 네 파일을 연결합니다.")
-    edited_roles = st.data_editor(role_rows, hide_index=True, width="stretch", disabled=["role"],
+    edited_roles = st.data_editor(role_rows, hide_index=True, use_container_width=True, disabled=["role"],
         column_config={"role": st.column_config.TextColumn("종류 (dm3 / image / seg / table)"),
                        "directory": st.column_config.TextColumn("하위 디렉토리 · 비우면 측정 폴더"),
                        "extension": st.column_config.TextColumn("확장자"),
@@ -132,7 +134,8 @@ def configure():
         regex = st.text_input("공통 키 정규식 · regex 방식에서 사용", cfg.get("key_regex", ""),
                               placeholder=r"(?P<key>.+?)(?:_image|_seg|_measure)?$",
                               help="(?P<key>...)에 들어온 문자가 같은 파일들을 묶습니다. 아래 역할별 정규식으로 서로 다른 접미사를 제거할 수 있습니다.")
-        with st.expander("고급 규칙 · 좌표 변환 · 열 이름 매핑"):
+        with st.container(border=True):
+            st.markdown("**고급 규칙 · 좌표 변환 · 열 이름 매핑**")
             st.markdown("파일명 규칙을 설명받은 뒤 **역할별 정규식**을 여기에 붙여 넣을 수 있습니다. 좌표 변경은 다음 분석에 적용됩니다.")
             role_regex_json = st.text_area("역할별 정규식 JSON (image / table / seg / dm3)",
                                            json_text(cfg.get("role_key_regex", {})), height=100)
@@ -159,7 +162,7 @@ def configure():
         return None, False
     a, b, c = st.columns(3)
     with a:
-        if st.button("폴더 규칙 저장", width="stretch"):
+        if st.button("폴더 규칙 저장", use_container_width=True):
             try:
                 cfg["params"] = asdict(be.validate_params(json.loads(st.session_state.params_json)))
                 ds.save_config(cfg)
@@ -168,9 +171,9 @@ def configure():
             except (ValueError, OSError) as exc:
                 issue_error(exc, "설정 저장 실패")
     with b:
-        scan = st.button("탐색 · 연결 미리보기", width="stretch")
+        scan = st.button("탐색 · 연결 미리보기", use_container_width=True)
     with c:
-        auto = st.button("탐색 후 전체 분석", type="primary", width="stretch")
+        auto = st.button("탐색 후 전체 분석", type="primary", use_container_width=True)
     with st.expander("설정 파일 가져오기 / 내보내기"):
         st.caption(f"기본 저장 위치: {ds.DEFAULT_CONFIG_PATH} · 설정에는 입력한 로컬 경로가 포함됩니다.")
         try:
@@ -214,7 +217,7 @@ def matches_preview():
     st.markdown("**연결 결과 · 후보가 여러 개이거나 필수 파일이 빠진 묶음은 자동 선택하지 않습니다.**")
     st.caption("경로와 픽셀 크기는 셀을 더블클릭해 수정하고 enabled를 켤 수 있습니다. 수정한 경로는 실제 로딩 때 다시 검사합니다. 연결 방식이나 규칙을 바꾸면 다시 탐색하세요.")
     cols = [c for c in ["enabled", "image_id", "image_path", "table_path", "seg_path", "dm3_path", "px_nm", "status", "issues"] if c in matches]
-    edited = st.data_editor(matches[cols], width="stretch", hide_index=True,
+    edited = st.data_editor(matches[cols], use_container_width=True, hide_index=True,
                             disabled=[c for c in ["image_id", "status", "issues"] if c in cols],
                             column_config={"enabled": st.column_config.CheckboxColumn("분석 포함")},
                             key=f"matches_editor_{st.session_state.get('match_revision', 0)}")
@@ -360,10 +363,11 @@ def overview(result):
         mask = shown[cols].astype(str).apply(lambda x: x.str.contains(query, case=False, regex=False)).any(axis=1)
         shown = shown[mask]
     front = [c for c in ["image_id", "category", "source_row", "cd_index", "analysis_valid", "z_max", "z_top2_kth", "n_z_valid", "cd_nm"] if c in shown]
-    event = st.dataframe(shown[front + [c for c in shown if c not in front]], height=430, width="stretch", hide_index=True,
+    event = st.dataframe(shown[front + [c for c in shown if c not in front]], height=430, use_container_width=True, hide_index=True,
                          on_select="rerun", selection_mode="single-row", key=f"overview_rows_{hash(tuple(shown.index))}")
-    if event.selection.rows:
-        linked_preview(result, shown.index[event.selection.rows[0]], "overview")
+    selected_rows = event["selection"]["rows"]
+    if selected_rows:
+        linked_preview(result, shown.index[selected_rows[0]], "overview")
 
 
 def linked_preview(result, index, prefix):
@@ -372,7 +376,7 @@ def linked_preview(result, index, prefix):
     dataset = next(d for d in result.datasets if str(d.image_id) == str(row.image_id))
     peers = result.l3[(result.l3.image_id == row.image_id) & (result.l3.category == row.category)]
     st.markdown(f"**선택 값의 실제 위치** · 이미지 `{row.image_id}` · 카테고리 `{row.category}` · 원본 행 `{row.source_row}`")
-    st.plotly_chart(image_overlay(dataset, peers, row, focus=True), width="stretch",
+    st.plotly_chart(image_overlay(dataset, peers, row, focus=True), use_container_width=True,
                     config={"scrollZoom": True, "displaylogo": False}, key=prefix + "_value_overlay")
     st.button("이 값을 D2 / D3 상세에 적용", key=prefix + "_apply",
               on_click=lambda: st.session_state.update(pending_focus=(str(row.image_id), str(row.category), index)))
@@ -409,7 +413,7 @@ def select_cd(result):
     contrast = controls[2].slider("표시 명암 범위 · 계산값에는 영향 없음", 0, 255, (0, 255))
     if dataset.img is None:
         st.info("이미지 미제공: 좌표만 표시합니다. 이미지 증거는 미산출이며 실패 점수가 아닙니다.")
-    st.plotly_chart(image_overlay(dataset, rows, row, show_mask, focus, contrast), width="stretch",
+    st.plotly_chart(image_overlay(dataset, rows, row, show_mask, focus, contrast), use_container_width=True,
                     config={"scrollZoom": True, "displaylogo": False}, key="overlay")
     st.caption("청록색: 같은 카테고리 CD · 노란색: 선택 CD와 보고 S/E. 선택 CD 확대는 원본 픽셀 해상도, 전체 보기는 표시용 축소입니다. 드래그 이동, 휠 확대, 더블클릭 복원. 좌표 원점은 좌상단, x=열, y=행입니다.")
     summary = {k: row.get(k) for k in ["source_row", "cd_index", "cd_nm", "s_x", "s_y", "e_x", "e_y", "px_nm", "z_max", "z_top2_kth", "n_z_valid"]}
@@ -435,9 +439,10 @@ def diagnostics(result, dataset, row, index, rows):
             if profile.empty:
                 st.info("이미지 또는 유효 좌표가 없어 프로파일을 계산할 수 없습니다.")
             else:
-                st.plotly_chart(profile_plot(profile, row), width="stretch", config={"displaylogo": False})
+                st.plotly_chart(profile_plot(profile, row), use_container_width=True, config={"displaylogo": False})
                 st.json(profile.attrs, expanded=False)
-                with st.expander("프로파일 모든 샘플 수치"):
+                with st.container(border=True):
+                    st.caption("프로파일 모든 샘플 수치")
                     table(profile, height=300)
         except Exception as exc:
             issue_error(exc, "프로파일 표시 실패")
@@ -445,7 +450,7 @@ def diagnostics(result, dataset, row, index, rows):
     if numeric:
         feature = st.selectbox("선택 시퀀스의 변화 추이", numeric, index=numeric.index("cd_nm") if "cd_nm" in numeric else 0)
         st.plotly_chart(px.line(rows.sort_values("cd_index"), x="cd_index", y=feature, markers=True,
-                                hover_data=["source_row"], labels={"cd_index": "측정 순서"}), width="stretch")
+                                hover_data=["source_row"], labels={"cd_index": "측정 순서"}), use_container_width=True)
 
 
 def distributions(result):
@@ -495,24 +500,24 @@ def distributions(result):
         hist.add_trace(go.Histogram(x=group[y], name=str(name), xbins=bins, opacity=.55,
                                    histnorm="probability" if normalize else None))
     hist.update_layout(barmode="overlay", xaxis_title=y, yaxis_title="그룹 내 비율" if normalize else "CD 수", height=380)
-    st.plotly_chart(hist, width="stretch", key="comparison_hist")
+    st.plotly_chart(hist, use_container_width=True, key="comparison_hist")
     st.caption("모든 그룹은 같은 구간 경계를 사용합니다. 아래 산점도의 점 또는 값 목록의 행을 클릭하면 바로 실제 이미지 영역이 나타납니다.")
     rows["__source_index"] = rows.index
     scatter = px.scatter(rows, x=x, y=y, color=group_column, hover_data=["image_id", "category", "source_row", "cd_index"],
                          custom_data=["__source_index"], render_mode="svg")
     scatter.update_layout(clickmode="event+select")
-    event = st.plotly_chart(scatter, width="stretch", on_select=lambda: st.session_state.update(distribution_selection_kind="scatter"),
+    event = st.plotly_chart(scatter, use_container_width=True, on_select=lambda: st.session_state.update(distribution_selection_kind="scatter"),
                             selection_mode="points", key=f"value_scatter_{x}_{y}_{group_column}_{hash(tuple(rows.index))}")
     ranges = st.columns(2)
     lower = ranges[0].number_input("값 목록 최소값 (Y 특징)", value=low, key=f"value_min_{y}_{hash(tuple(rows.index))}")
     upper = ranges[1].number_input("값 목록 최대값 (Y 특징)", value=high, key=f"value_max_{y}_{hash(tuple(rows.index))}")
     candidates = rows[values.between(lower, upper)]
     cols_to_show = list(dict.fromkeys(["image_id", "category", "source_row", "cd_index", y, x, "z_max"]))
-    selection = st.dataframe(candidates[cols_to_show], width="stretch", height=260, hide_index=True,
+    selection = st.dataframe(candidates[cols_to_show], use_container_width=True, height=260, hide_index=True,
                               on_select=lambda: st.session_state.update(distribution_selection_kind="table"),
                               selection_mode="single-row", key=f"value_rows_{y}_{hash(tuple(candidates.index))}")
-    clicked = selected_source_index(candidates, selection.selection.rows)
-    points = event.selection.points
+    clicked = selected_source_index(candidates, selection["selection"]["rows"])
+    points = event["selection"]["points"]
     if st.session_state.get("distribution_selection_kind") == "scatter" and points and points[-1].get("customdata"):
         point_index = points[-1]["customdata"][0]
         if point_index in rows.index:
@@ -622,7 +627,7 @@ def main():
     with st.sidebar:
         st.markdown("### 작업 순서")
         st.markdown("**1** 폴더 · 규칙 확인\n\n**2** 연결 미리보기\n\n**3** 정상 기준 선택 후 분석\n\n**4** D1–D7에서 원인 확인")
-        demo = st.button("합성 데모 바로 분석", width="stretch", type="primary", key="demo_run")
+        demo = st.button("합성 데모 바로 분석", use_container_width=True, type="primary", key="demo_run")
         st.caption("원본 파일 없이 작동을 확인합니다. 실제 성능 검증용 데이터는 아닙니다.")
         if st.session_state.analysis is not None:
             st.success(f"분석 결과 유지 중 · {st.session_state.run_count}회 실행")

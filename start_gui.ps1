@@ -22,5 +22,5 @@ Write-Host "CDQC Workbench: http://127.0.0.1:$Port"
 Write-Host "Keep this window open. Press Ctrl+C to stop."
 & $Python -m streamlit run (Join-Path $PSScriptRoot "cdqc_workbench\app.py") `
     --server.address 127.0.0.1 --server.port $Port --server.headless $headless `
-    --browser.gatherUsageStats false --client.showErrorLinks false
+    --browser.gatherUsageStats false
 exit $LASTEXITCODE

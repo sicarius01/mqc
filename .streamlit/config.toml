@@ -10,7 +10,6 @@ serverAddress = "127.0.0.1"
 
 [client]
 showErrorDetails = "full"
-showErrorLinks = false
 toolbarMode = "minimal"
 
 [theme]

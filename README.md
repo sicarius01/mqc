@@ -1,12 +1,12 @@
 # cdqc — TEM CD 측정 품질 판정용 연산 라이브러리
 
-**v0.6.1: 폴더 기반 진단 GUI와 NASCA Excel 로더.** 루트 디렉토리와 파일 매칭 규칙을 저장하면
+**v0.6.2: GUI 설치 버전 호환성 개선.** 루트 디렉토리와 파일 매칭 규칙을 저장하면
 하위 폴더에서 DM3·TIF·세그멘테이션 PNG·측정 XLSX를 찾아 일괄 분석한다.
 이미지 오버레이, CD별 피쳐·점수·프로파일, 분포, 정상 기준 통계, 입력 문제를 화면에서 확인한다.
 설치·실행·규칙 설정은 [GUI 사용 안내](GUI_GUIDE.md)를 참조한다.
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements-gui.txt
+.\.venv\Scripts\python.exe -m pip install -e . -r requirements-gui.txt
 .\start_gui.ps1
 ```
 
@@ -43,9 +43,9 @@ pip install -e .
   등록한다. 이후 어느 경로에서든 `import cdqc`가 되고, **`git pull`만 받으면
   재설치 없이 새 코드가 바로 반영**된다.
 - venv를 쓰는 경우: `python -m venv .venv` → `.venv\Scripts\activate` → 위와 동일.
-- 의존성(numpy, scipy, pandas, opencv-python-headless — 4개, 버전 핀)은
+- 의존성(numpy, scipy, pandas, opencv-python-headless — 4개, 호환 버전 범위)은
   `pip install -e .` 가 pyproject.toml을 보고 같이 설치한다.
-- 확인: `python -c "import cdqc; print(cdqc.__version__)"` → `0.6.1`
+- 확인: `python -c "import cdqc; print(cdqc.__version__)"` → `0.6.2`
 
 ## 입력 계약
 

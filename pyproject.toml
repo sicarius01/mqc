@@ -4,23 +4,23 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cdqc"
-version = "0.6.1"
+version = "0.6.2"
 description = "TEM CD measurement quality — pure computation library (features, robust stats, z)"
 requires-python = ">=3.11"
 dependencies = [
-    "numpy==2.5.2",
-    "scipy==1.18.0",
-    "pandas==3.0.5",
-    "opencv-python-headless==5.0.0.93",
+    "numpy>=2.2.6,<3",
+    "scipy>=1.15.3,<2",
+    "pandas>=2.2.3,<4",
+    "opencv-python-headless>=4.11.0.86,<6",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest==9.1.1"]
+dev = ["pytest>=8.3.5,<10"]
 gui = [
-    "streamlit==1.63.0",
-    "plotly==7.0.0",
-    "pywin32==312; sys_platform == 'win32'",
-    "ncempy==1.16",
+    "streamlit>=1.41.1,<2",
+    "plotly>=5.24.1,<8",
+    "pywin32>=308,<313; sys_platform == 'win32'",
+    "ncempy>=1.13.1,<2",
 ]
 
 [tool.setuptools.packages.find]

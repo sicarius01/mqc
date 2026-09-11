@@ -18,7 +18,7 @@ XLSX를 `pandas.read_excel`/openpyxl로 직접 읽는 대체 경로는 사용하
 git pull
 # 처음 설치할 때만 가상환경 생성. 이미 있으면 생략한다.
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements-gui.txt
+.\.venv\Scripts\python.exe -m pip install -e . -r requirements-gui.txt
 .\start_gui.ps1
 ```
 
@@ -34,6 +34,18 @@ python -m venv .venv
 ```
 
 기존 Python 환경에 GUI 의존성이 없다면 첫 업데이트 때 설치가 필요하다. 라이브러리만 사용할 때는 기존 `pip install -e .` 흐름을 계속 사용할 수 있다.
+
+### `No matching distribution found for streamlit==1.63.0` 오류
+
+v0.6.2부터 Streamlit을 특정 최신 버전 하나로 고정하지 않는다. `git pull` 후 위의 `pip install -r requirements-gui.txt`를 다시 실행하면 설치 저장소에 있는 `streamlit>=1.41.1,<2` 중 다른 의존성과 호환되는 버전을 선택한다. NumPy·pandas·Plotly 등도 함께 호환 범위로 바꿨으며 `pip install -e ".[gui]"`에도 같은 범위를 적용한다.
+
+Python 3.13 지원은 [Streamlit 1.41 릴리스 안내](https://docs.streamlit.io/develop/quick-reference/release-notes/2024)에 명시되어 있다. 구버전에서 지원하지 않는 너비 옵션·중첩 펼침 영역·실행 옵션도 수정했다. 사내 저장소에 이 범위의 버전이 전혀 없으면 버전 범위 변경만으로 설치되지는 않으므로 아래 오프라인 설치를 사용한다.
+
+오래된 버전 조합을 명시해서 설치하려면 다음 명령을 사용한다. 이 파일은 직접 의존성만 고정하며 전체 하위 의존성의 lock 파일은 아니다.
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e . -r requirements-gui.txt -c constraints-gui-min.txt
+```
 
 ### 인터넷이 없는 PC에 설치
 
@@ -155,6 +167,7 @@ GUI의 CSV·기준 통계 저장은 로컬에서 다시 확인하기 위한 기�
 
 ## 6. 개발 검증 범위
 
+- v0.6.2는 Windows / Python 3.13의 별도 가상환경에 Streamlit **1.41.1**과 `constraints-gui-min.txt`의 직접 의존성을 설치해 전체 테스트 **228개 통과, 1개 건너뜀**을 확인했다. 빈 입력 회귀 사례에서 NumPy의 `Mean of empty slice` 경고 1개가 있었으며 테스트 실패는 없었다. 최신 기존 환경(Streamlit **1.63.0**)에서도 GUI·통합 테스트 **17개 통과**했다. 최소 버전 환경에서 실제 실행 스크립트의 서버 상태 응답 `200`, wheel 설치, `pip check`도 확인했다. 범위 내 모든 버전 조합을 전수 검증한 것은 아니다.
 - v0.6.1 최종 전체 테스트는 **228개 통과, 1개 건너뜀**이다. 건너뛴 항목은 Microsoft Excel이 설치된 PC에서만 실행되는 실제 COM 왕복 테스트다. 합성 selftest도 **59개 통과**했다.
 - v0.6.0의 기존 테스트 194개와 합성 selftest 59개는 다시 통과했다. 다만 기존 XLSX 테스트는 일반 XLSX만 읽었고, 배치 테스트는 파일 로딩 전체를 대체했으므로 NASCA 전용 로더를 검증한 결과가 아니었다.
 - v0.6.1에서는 Excel COM 로더의 호출·데이터 변환·종료·오류 경로와, 이미지별 4종 파일 탐색부터 분석·GUI까지 연결하는 회귀 테스트를 추가했다. TIFF·PNG·CSV는 실제 임시 파일을 읽으며, 개발 PC에 설치되지 않은 Excel과 제공되지 않은 장비 DM3의 경계만 테스트용 객체로 대체한다.
